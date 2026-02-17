@@ -50,6 +50,44 @@ function updateStats(metrics: SwarmMetrics): void {
 }
 
 // ---------------------------------------------------------------------------
+// Toggle controls — keyboard shortcuts L / M / C
+// ---------------------------------------------------------------------------
+const toggles = { labels: false, msgLabels: false, clustering: false };
+
+function updateToggles(): void {
+	const el = document.getElementById("toggles");
+	if (!el) return;
+	el.textContent = [
+		`[L] labels  ${toggles.labels ? "●" : "○"}`,
+		`[M] msgs    ${toggles.msgLabels ? "●" : "○"}`,
+		`[C] cluster ${toggles.clustering ? "●" : "○"}`,
+	].join("\n");
+}
+
+window.addEventListener("keydown", (e) => {
+	switch (e.key.toLowerCase()) {
+		case "l":
+			toggles.labels = !toggles.labels;
+			scene.setLabelsVisible(toggles.labels);
+			updateToggles();
+			break;
+		case "m":
+			toggles.msgLabels = !toggles.msgLabels;
+			scene.setMsgLabelsVisible(toggles.msgLabels);
+			updateToggles();
+			break;
+		case "c":
+			toggles.clustering = !toggles.clustering;
+			scene.setClusteringEnabled(toggles.clustering);
+			updateToggles();
+			break;
+	}
+});
+
+// Initialize toggle display
+updateToggles();
+
+// ---------------------------------------------------------------------------
 // WebSocket URL: same host as the page, /ws path (server handles port)
 // ---------------------------------------------------------------------------
 const wsUrl = `ws://${window.location.host}/ws`;

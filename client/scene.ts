@@ -3,6 +3,10 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import {
+	CSS2DObject,
+	CSS2DRenderer,
+} from "three/addons/renderers/CSS2DRenderer.js";
 import type {
 	Agent,
 	AgentCapability,
@@ -25,6 +29,7 @@ interface NodeState {
 	vy: number;
 	agentName: string;
 	parentAgent: string | null;
+	beadId: string | null;
 	state: AgentState;
 	/** Unique phase offset for pulse animation */
 	phase: number;
@@ -33,6 +38,7 @@ interface NodeState {
 	/** Completion fadeout: opacity from 1 → 0 over 2s (only when completed) */
 	fadeT: number;
 	completing: boolean;
+	label: CSS2DObject;
 }
 
 interface EdgeState {
@@ -48,6 +54,7 @@ interface FlightState {
 	curve: THREE.QuadraticBezierCurve3;
 	/** Progress along the arc, 0 → 1 */
 	t: number;
+	msgLabel: CSS2DObject;
 }
 
 interface DiamondState {
@@ -62,6 +69,9 @@ interface DiamondState {
 export interface SceneController {
 	applySnapshot(snapshot: StateSnapshot): void;
 	addMessage(msg: AgentMessage): void;
+	setLabelsVisible(visible: boolean): void;
+	setMsgLabelsVisible(visible: boolean): void;
+	setClusteringEnabled(enabled: boolean): void;
 	dispose(): void;
 }
 
@@ -113,6 +123,31 @@ const MERGE_STATUS_COLORS: Record<string, number> = {
 };
 
 // ---------------------------------------------------------------------------
+// Cluster color helper: hash beadId → hue for visual grouping tint
+// ---------------------------------------------------------------------------
+
+function beadGroupColor(beadId: string): THREE.Color {
+	let h = 0;
+	for (let i = 0; i < beadId.length; i++) {
+		h = ((h << 5) - h + beadId.charCodeAt(i)) | 0;
+	}
+	const hue = (Math.abs(h) % 360) / 360;
+	return new THREE.Color().setHSL(hue, 0.7, 0.55);
+}
+
+function effectiveNodeColor(
+	state: AgentState,
+	beadId: string | null,
+	withCluster: boolean,
+): THREE.Color {
+	const base = stateColor(state);
+	if (withCluster && beadId) {
+		return base.clone().lerp(beadGroupColor(beadId), 0.3);
+	}
+	return base;
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -129,6 +164,21 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 	renderer.toneMapping = THREE.ACESFilmicToneMapping;
 	renderer.toneMappingExposure = 1.2;
+
+	// -------------------------------------------------------------------------
+	// CSS2D overlay renderer (text labels)
+	// -------------------------------------------------------------------------
+	const labelRenderer = new CSS2DRenderer();
+	labelRenderer.setSize(window.innerWidth, window.innerHeight);
+	const labelEl = labelRenderer.domElement;
+	labelEl.style.position = "absolute";
+	labelEl.style.top = "0";
+	labelEl.style.left = "0";
+	labelEl.style.width = "100%";
+	labelEl.style.height = "100%";
+	labelEl.style.pointerEvents = "none";
+	labelEl.style.zIndex = "1";
+	document.body.appendChild(labelEl);
 
 	// -------------------------------------------------------------------------
 	// Scene + camera
@@ -193,8 +243,38 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	const diamonds = new Map<string, DiamondState>(); // key: branchName
 
 	// Track all message IDs that have ever been launched to prevent re-flight
-	// after a packet completes and is removed from `flights`.
 	const flownMessages = new Set<string>();
+
+	// -------------------------------------------------------------------------
+	// Toggle state (all off by default)
+	// -------------------------------------------------------------------------
+	let labelsVisible = false;
+	let msgLabelsVisible = false;
+	let clusteringEnabled = false;
+
+	// -------------------------------------------------------------------------
+	// Label helpers
+	// -------------------------------------------------------------------------
+	function createNodeLabelObj(agent: Agent): CSS2DObject {
+		const el = document.createElement("div");
+		el.className = "node-label";
+		el.textContent = agent.name;
+		const obj = new CSS2DObject(el);
+		// Position below the node sphere
+		const r = CAPABILITY_RADIUS[agent.capability] ?? 0.3;
+		obj.position.set(0, -(r + 0.25), 0);
+		return obj;
+	}
+
+	function createMsgLabelObj(type: string): CSS2DObject {
+		const el = document.createElement("div");
+		el.className = "msg-label";
+		el.textContent = type;
+		const obj = new CSS2DObject(el);
+		// Position slightly above the packet sphere
+		obj.position.set(0, 0.22, 0);
+		return obj;
+	}
 
 	// -------------------------------------------------------------------------
 	// Node management
@@ -202,7 +282,9 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	function addNode(agent: Agent): void {
 		const radius = CAPABILITY_RADIUS[agent.capability] ?? 0.3;
 		const geo = new THREE.SphereGeometry(radius, 16, 12);
-		const mat = new THREE.MeshBasicMaterial({ color: stateColor(agent.state) });
+		const mat = new THREE.MeshBasicMaterial({
+			color: effectiveNodeColor(agent.state, agent.beadId, clusteringEnabled),
+		});
 		const mesh = new THREE.Mesh(geo, mat);
 
 		// Scatter near origin; force sim will arrange them
@@ -212,7 +294,11 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 		// Start at scale 0 for spawn animation
 		mesh.scale.setScalar(0);
 
+		const label = createNodeLabelObj(agent);
+		label.visible = labelsVisible;
+		mesh.add(label);
 		scene.add(mesh);
+
 		nodes.set(agent.name, {
 			mesh,
 			lx: mesh.position.x,
@@ -221,11 +307,13 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			vy: 0,
 			agentName: agent.name,
 			parentAgent: agent.parentAgent,
+			beadId: agent.beadId,
 			state: agent.state,
 			phase: Math.random() * Math.PI * 2,
 			spawnT: 0,
 			fadeT: 0,
 			completing: false,
+			label,
 		});
 	}
 
@@ -237,7 +325,11 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 		}
 		node.state = agent.state;
 		node.parentAgent = agent.parentAgent;
-		node.mesh.material.color.set(stateColor(agent.state));
+		node.beadId = agent.beadId;
+		node.mesh.material.color.set(
+			effectiveNodeColor(agent.state, agent.beadId, clusteringEnabled),
+		);
+		node.label.element.textContent = agent.name;
 
 		// Trigger completion fadeout
 		if (agent.state === "completed" && !node.completing) {
@@ -383,6 +475,26 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 				ni.vy += fy * dt;
 				nj.vx -= fx * dt;
 				nj.vy -= fy * dt;
+
+				// Clustering: extra spring attraction for same-beadId nodes
+				if (
+					clusteringEnabled &&
+					ni.beadId !== null &&
+					ni.beadId === nj.beadId
+				) {
+					const restCluster = 2.5;
+					const excess = dist - restCluster;
+					if (excess > 0) {
+						const clusterSpring = 3.0 * excess;
+						// Pull ni toward nj (dx is ni - nj, so negate for attraction)
+						const cfx = (-dx / dist) * clusterSpring;
+						const cfy = (-dy / dist) * clusterSpring;
+						ni.vx += cfx * dt;
+						ni.vy += cfy * dt;
+						nj.vx -= cfx * dt;
+						nj.vy -= cfy * dt;
+					}
+				}
 			}
 
 			// Spring attraction to parent
@@ -538,7 +650,12 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 		packet.position.z = 0.6;
 		scene.add(packet);
 
-		flights.set(msg.id, { packet, arcLine, curve, t: 0 });
+		// Message type label — attached to packet, follows it automatically
+		const msgLabel = createMsgLabelObj(msg.type);
+		msgLabel.visible = msgLabelsVisible;
+		packet.add(msgLabel);
+
+		flights.set(msg.id, { packet, arcLine, curve, t: 0, msgLabel });
 	}
 
 	function stepFlights(dt: number): void {
@@ -591,6 +708,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 		}
 
 		composer.render();
+		labelRenderer.render(scene, camera);
 	}
 
 	animId = requestAnimationFrame(animate);
@@ -606,6 +724,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 		renderer.setSize(w, h);
 		composer.setSize(w, h);
 		bloomPass.setSize(w, h);
+		labelRenderer.setSize(w, h);
 	}
 
 	window.addEventListener("resize", onResize);
@@ -642,6 +761,30 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			startFlight(msg);
 		},
 
+		setLabelsVisible(visible: boolean): void {
+			labelsVisible = visible;
+			for (const node of nodes.values()) {
+				node.label.visible = visible;
+			}
+		},
+
+		setMsgLabelsVisible(visible: boolean): void {
+			msgLabelsVisible = visible;
+			for (const flight of flights.values()) {
+				flight.msgLabel.visible = visible;
+			}
+		},
+
+		setClusteringEnabled(enabled: boolean): void {
+			clusteringEnabled = enabled;
+			// Refresh all node colors to apply/remove cluster tint
+			for (const node of nodes.values()) {
+				node.mesh.material.color.set(
+					effectiveNodeColor(node.state, node.beadId, enabled),
+				);
+			}
+		},
+
 		dispose(): void {
 			cancelAnimationFrame(animId);
 			window.removeEventListener("resize", onResize);
@@ -675,6 +818,9 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 
 			composer.dispose();
 			renderer.dispose();
+			if (document.body.contains(labelEl)) {
+				document.body.removeChild(labelEl);
+			}
 		},
 	};
 }
