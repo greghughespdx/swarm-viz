@@ -86,7 +86,7 @@ const stmtMessageCount = mailDb.query<{ count: number }, []>(
 );
 
 const stmtMergeQueue = mergeQueueDb.query<MergeQueueRow, []>(
-  "SELECT * FROM merge_queue ORDER BY enqueued_at DESC"
+  "SELECT * FROM merge_queue WHERE status IN ('pending', 'merging') ORDER BY enqueued_at DESC"
 );
 
 function makeMetricsStatements(db: Database) {

@@ -70,9 +70,9 @@ export interface SceneController {
 // ---------------------------------------------------------------------------
 
 const STATE_COLORS: Record<AgentState, number> = {
-	working: 0x00ffff,
+	working: 0x00ff88,
 	booting: 0xffcc00,
-	completed: 0x00ff88,
+	completed: 0x4488ff,
 	stalled: 0xff8800,
 	zombie: 0xff0000,
 };
@@ -177,9 +177,9 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 
 	const bloomPass = new UnrealBloomPass(
 		new THREE.Vector2(window.innerWidth, window.innerHeight),
-		1.8, // strength
+		0.8, // strength
 		0.4, // radius
-		0.08, // threshold — most emissive colours will bloom
+		0.3, // threshold — most emissive colours will bloom
 	);
 	composer.addPass(bloomPass);
 	composer.addPass(new OutputPass());
@@ -375,7 +375,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 				const dx = ni.lx - nj.lx;
 				const dy = ni.ly - nj.ly;
 				const dist = Math.sqrt(dx * dx + dy * dy) + 0.01;
-				const force = 6 / (dist * dist);
+				const force = 20 / (dist * dist);
 				const fx = (dx / dist) * force;
 				const fy = (dy / dist) * force;
 
@@ -392,7 +392,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 					const dx = parent.lx - ni.lx;
 					const dy = parent.ly - ni.ly;
 					const dist = Math.sqrt(dx * dx + dy * dy) + 0.01;
-					const rest = 3.5;
+					const rest = 6.0;
 					const spring = 2.0 * (dist - rest);
 					ni.vx += (dx / dist) * spring * dt;
 					ni.vy += (dy / dist) * spring * dt;
