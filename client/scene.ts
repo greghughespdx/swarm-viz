@@ -162,8 +162,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	});
 	renderer.setSize(window.innerWidth, window.innerHeight);
 	renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-	renderer.toneMapping = THREE.ACESFilmicToneMapping;
-	renderer.toneMappingExposure = 1.2;
+	renderer.toneMapping = THREE.NoToneMapping;
 
 	// -------------------------------------------------------------------------
 	// CSS2D overlay renderer (text labels)
@@ -350,6 +349,8 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	function removeNode(name: string): void {
 		const node = nodes.get(name);
 		if (!node) return;
+		node.label.removeFromParent();
+		node.label.element.remove();
 		scene.remove(node.mesh);
 		node.mesh.geometry.dispose();
 		node.mesh.material.dispose();

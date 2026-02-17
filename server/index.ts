@@ -214,7 +214,7 @@ function initClientState(snapshot: StateSnapshot): ClientState {
   const lastMsg = snapshot.messages[snapshot.messages.length - 1];
   const lastMessageTimestamp = lastMsg
     ? new Date(lastMsg.createdAt).toISOString()
-    : "";
+    : new Date(0).toISOString();
 
   const mergeStatusMap = new Map<string, string>();
   for (const e of snapshot.mergeQueue) {
