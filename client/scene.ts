@@ -245,6 +245,9 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	// Track all message IDs that have ever been launched to prevent re-flight
 	const flownMessages = new Set<string>();
 
+	// Track agents that have fully faded out to prevent re-adding from stale snapshots
+	const completedRemoved = new Set<string>();
+
 	// -------------------------------------------------------------------------
 	// Toggle state (all off by default)
 	// -------------------------------------------------------------------------
@@ -320,6 +323,12 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	function updateNode(agent: Agent): void {
 		const node = nodes.get(agent.name);
 		if (!node) {
+			// If this agent already faded out, skip re-adding unless it restarted
+			if (completedRemoved.has(agent.name)) {
+				if (agent.state === "completed") return;
+				// Agent restarted with a non-completed state — allow re-add
+				completedRemoved.delete(agent.name);
+			}
 			addNode(agent);
 			return;
 		}
@@ -568,6 +577,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			}
 		}
 		for (const name of completedToRemove) {
+			completedRemoved.add(name);
 			removeNode(name);
 		}
 	}
@@ -739,6 +749,10 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			for (const name of nodes.keys()) {
 				if (!live.has(name)) removeNode(name);
 			}
+			// Prune completedRemoved for agents no longer in snapshot (allows future reuse)
+			for (const name of completedRemoved) {
+				if (!live.has(name)) completedRemoved.delete(name);
+			}
 
 			// Add / update
 			for (const agent of snapshot.agents) {
@@ -808,6 +822,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			}
 			flights.clear();
 			flownMessages.clear();
+			completedRemoved.clear();
 
 			for (const d of diamonds.values()) {
 				scene.remove(d.mesh);
