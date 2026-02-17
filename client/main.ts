@@ -50,7 +50,7 @@ function updateStats(metrics: SwarmMetrics): void {
 }
 
 // ---------------------------------------------------------------------------
-// Toggle controls — keyboard shortcuts L / M / C
+// Toggle controls — keyboard shortcuts L / M / G
 // ---------------------------------------------------------------------------
 const toggles = { labels: false, msgLabels: false, clustering: false };
 
@@ -60,7 +60,7 @@ function updateToggles(): void {
 	el.textContent = [
 		`[L] labels  ${toggles.labels ? "●" : "○"}`,
 		`[M] msgs    ${toggles.msgLabels ? "●" : "○"}`,
-		`[C] cluster ${toggles.clustering ? "●" : "○"}`,
+		`[G] cluster ${toggles.clustering ? "●" : "○"}`,
 	].join("\n");
 }
 
@@ -76,7 +76,7 @@ window.addEventListener("keydown", (e) => {
 			scene.setMsgLabelsVisible(toggles.msgLabels);
 			updateToggles();
 			break;
-		case "c":
+		case "g":
 			toggles.clustering = !toggles.clustering;
 			scene.setClusteringEnabled(toggles.clustering);
 			updateToggles();
