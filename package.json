@@ -1,20 +1,21 @@
 {
-  "name": "swarm-viz",
-  "version": "0.1.0",
-  "description": "Real-time visualization of Overstory multi-agent swarm activity",
-  "type": "module",
-  "scripts": {
-    "dev": "bun run server/index.ts",
-    "build": "bun build client/main.ts --outdir dist --minify",
-    "typecheck": "tsc --noEmit",
-    "lint": "tsc --noEmit"
-  },
-  "dependencies": {
-    "three": "^0.172.0"
-  },
-  "devDependencies": {
-    "@types/three": "^0.172.0",
-    "bun-types": "^1.1.0",
-    "typescript": "^5.9.0"
-  }
+	"name": "swarm-viz",
+	"version": "0.1.0",
+	"description": "Real-time visualization of Overstory multi-agent swarm activity",
+	"type": "module",
+	"scripts": {
+		"dev": "bun run server/index.ts",
+		"build": "bun build client/main.ts --outdir dist --minify",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check client/"
+	},
+	"dependencies": {
+		"three": "^0.172.0"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.4",
+		"@types/three": "^0.172.0",
+		"bun-types": "^1.3.9",
+		"typescript": "^5.9.0"
+	}
 }

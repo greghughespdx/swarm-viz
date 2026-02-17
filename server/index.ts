@@ -2,24 +2,23 @@ import { Database } from "bun:sqlite";
 import type { ServerWebSocket } from "bun";
 import { join } from "node:path";
 import type {
-  AgentSession,
-  MailMessage,
-  MergeQueueEntry,
-  MetricsSession,
-  OvrstoryEvent,
+  Agent,
   ServerMessage,
-  SwarmDelta,
-  SwarmSnapshot,
+  StateSnapshot,
+  StateUpdate,
+  SwarmMetrics,
 } from "../shared/types.ts";
 import {
-  mapEvent,
+  computeMetrics,
   mapMessage,
   mapMergeEntry,
   mapMetricsSession,
   mapSession,
+  toAgent,
+  toAgentMessage,
+  toVizMergeEntry,
 } from "./mappers.ts";
 import type {
-  EventRow,
   MessageRow,
   MergeQueueRow,
   MetricsSessionRow,
@@ -34,7 +33,6 @@ const PORT = parseInt(process.env["PORT"] ?? "3000", 10);
 const POLL_INTERVAL_MS = parseInt(process.env["POLL_INTERVAL_MS"] ?? "500", 10);
 const STATIC_DIR = process.env["STATIC_DIR"] ?? join(import.meta.dir, "../dist");
 const MAX_RECENT_MESSAGES = 50;
-const MAX_RECENT_EVENTS = 100;
 
 // ── Graceful database open ────────────────────────────────────────────────────
 
@@ -59,7 +57,6 @@ const mailDb = openDb(`${OVERSTORY_DIR}/mail.db`, "mail.db", true)!;
 const mergeQueueDb = openDb(`${OVERSTORY_DIR}/merge-queue.db`, "merge-queue.db", true)!;
 
 // Optional databases — continue with degraded data if unavailable
-let eventsDb: Database | null = openDb(`${OVERSTORY_DIR}/events.db`, "events.db", false);
 let metricsDb: Database | null = openDb(`${OVERSTORY_DIR}/metrics.db`, "metrics.db", false);
 
 // ── Prepared statements ──────────────────────────────────────────────────────
@@ -84,29 +81,13 @@ const stmtNewMessages = mailDb.query<MessageRow, [string]>(
    ORDER BY created_at ASC`
 );
 
+const stmtMessageCount = mailDb.query<{ count: number }, []>(
+  "SELECT COUNT(*) as count FROM messages"
+);
+
 const stmtMergeQueue = mergeQueueDb.query<MergeQueueRow, []>(
   "SELECT * FROM merge_queue ORDER BY enqueued_at DESC"
 );
-
-// Events and metrics statements are created lazily since these DBs are optional
-function makeEventStatements(db: Database) {
-  return {
-    recent: db.query<EventRow, [number]>(
-      `SELECT id, run_id, agent_name, session_id, event_type, tool_name,
-              tool_args, tool_duration_ms, level, data, created_at
-       FROM events
-       ORDER BY created_at DESC
-       LIMIT ?`
-    ),
-    since: db.query<EventRow, [string]>(
-      `SELECT id, run_id, agent_name, session_id, event_type, tool_name,
-              tool_args, tool_duration_ms, level, data, created_at
-       FROM events
-       WHERE created_at > ?
-       ORDER BY created_at ASC`
-    ),
-  };
-}
 
 function makeMetricsStatements(db: Database) {
   return {
@@ -121,64 +102,36 @@ function makeMetricsStatements(db: Database) {
   };
 }
 
-type EventStatements = ReturnType<typeof makeEventStatements>;
 type MetricsStatements = ReturnType<typeof makeMetricsStatements>;
 
-let eventStmts: EventStatements | null = eventsDb ? makeEventStatements(eventsDb) : null;
-let metricsStmts: MetricsStatements | null = metricsDb ? makeMetricsStatements(metricsDb) : null;
+let metricsStmts: MetricsStatements | null = metricsDb
+  ? makeMetricsStatements(metricsDb)
+  : null;
 
-// ── Query helpers ────────────────────────────────────────────────────────────
+// ── Query helpers (return server-internal types) ─────────────────────────────
 
-function querySessions(): AgentSession[] {
+function querySessions() {
   return stmtAllSessions.all().map(mapSession);
 }
 
-function queryRecentMessages(): MailMessage[] {
+function queryRecentMessages() {
   return stmtRecentMessages.all(MAX_RECENT_MESSAGES).map(mapMessage).reverse();
 }
 
-function queryNewMessages(since: string): MailMessage[] {
+function queryNewMessages(since: string) {
   return stmtNewMessages.all(since).map(mapMessage);
 }
 
-function queryMergeQueue(): MergeQueueEntry[] {
+function queryMessageCount(): number {
+  const row = stmtMessageCount.get();
+  return row?.count ?? 0;
+}
+
+function queryMergeQueue() {
   return stmtMergeQueue.all().map(mapMergeEntry);
 }
 
-function queryRecentEvents(): OvrstoryEvent[] {
-  if (!eventStmts) {
-    // Retry opening the DB in case it became available after server start
-    if (eventsDb === null) {
-      eventsDb = openDb(`${OVERSTORY_DIR}/events.db`, "events.db", false);
-      if (eventsDb) {
-        eventStmts = makeEventStatements(eventsDb);
-      }
-    }
-    if (!eventStmts) return [];
-  }
-  try {
-    return eventStmts.recent.all(MAX_RECENT_EVENTS).map(mapEvent).reverse();
-  } catch (err) {
-    console.warn("[swarm-viz] Error querying events:", err);
-    eventStmts = null;
-    eventsDb = null;
-    return [];
-  }
-}
-
-function queryNewEvents(since: string): OvrstoryEvent[] {
-  if (!eventStmts) return [];
-  try {
-    return eventStmts.since.all(since).map(mapEvent);
-  } catch (err) {
-    console.warn("[swarm-viz] Error querying new events:", err);
-    eventStmts = null;
-    eventsDb = null;
-    return [];
-  }
-}
-
-function queryMetricsSessions(): MetricsSession[] {
+function queryMetricsSessions() {
   if (!metricsStmts) {
     if (metricsDb === null) {
       metricsDb = openDb(`${OVERSTORY_DIR}/metrics.db`, "metrics.db", false);
@@ -198,148 +151,141 @@ function queryMetricsSessions(): MetricsSession[] {
   }
 }
 
-// ── Snapshot ─────────────────────────────────────────────────────────────────
+// ── Viz-layer snapshot builder ───────────────────────────────────────────────
 
-function buildSnapshot(): SwarmSnapshot {
+function buildSnapshot(): StateSnapshot {
+  const sessions = querySessions();
+  const messages = queryRecentMessages();
+  const mergeQueue = queryMergeQueue();
+  const metricsSessions = queryMetricsSessions();
+  const totalMessages = queryMessageCount();
+
   return {
-    timestamp: new Date().toISOString(),
-    sessions: querySessions(),
-    recentMessages: queryRecentMessages(),
-    mergeQueue: queryMergeQueue(),
-    recentEvents: queryRecentEvents(),
-    metricsSessions: queryMetricsSessions(),
+    agents: sessions.map(toAgent),
+    messages: messages.map(toAgentMessage),
+    mergeQueue: mergeQueue.map(toVizMergeEntry),
+    metrics: computeMetrics(sessions, totalMessages, metricsSessions),
   };
 }
 
 // ── Per-client delta tracking ─────────────────────────────────────────────────
 
 interface ClientState {
-  sessionMap: Map<string, AgentSession>;
+  /** agent name → serialized state for change detection */
+  agentStateMap: Map<string, string>;
+  /** ISO timestamp of the last message seen */
   lastMessageTimestamp: string;
-  mergeStatusMap: Map<number, string>;
-  lastEventTimestamp: string;
-  metricsKey: string; // serialized for change detection
+  /** branchName → status string */
+  mergeStatusMap: Map<string, string>;
+  /** cached metrics key for change detection */
+  metricsKey: string;
+  /** last known total message count */
+  lastTotalMessages: number;
 }
 
-function metricsKey(sessions: MetricsSession[]): string {
-  return sessions
-    .map((s) => `${s.agentName}:${s.beadId}:${s.durationMs}:${s.completedAt ?? ""}`)
-    .join("|");
+function metricsKey(m: SwarmMetrics): string {
+  return `${m.totalAgents}:${m.activeAgents}:${m.totalMessages}:${m.totalCost.toFixed(6)}`;
 }
 
-function initClientState(snapshot: SwarmSnapshot): ClientState {
-  const sessionMap = new Map<string, AgentSession>();
-  for (const s of snapshot.sessions) {
-    sessionMap.set(s.id, s);
+function agentKey(a: Agent): string {
+  return `${a.state}:${a.lastActivity}:${a.parentAgent ?? ""}`;
+}
+
+function initClientState(snapshot: StateSnapshot): ClientState {
+  const agentStateMap = new Map<string, string>();
+  for (const a of snapshot.agents) {
+    agentStateMap.set(a.name, agentKey(a));
   }
 
-  const lastMsg = snapshot.recentMessages[snapshot.recentMessages.length - 1];
-  const lastMessageTimestamp = lastMsg?.createdAt ?? "";
+  const lastMsg = snapshot.messages[snapshot.messages.length - 1];
+  const lastMessageTimestamp = lastMsg
+    ? new Date(lastMsg.createdAt).toISOString()
+    : "";
 
-  const mergeStatusMap = new Map<number, string>();
+  const mergeStatusMap = new Map<string, string>();
   for (const e of snapshot.mergeQueue) {
-    mergeStatusMap.set(e.id, e.status);
+    mergeStatusMap.set(e.branchName, e.status);
   }
-
-  const lastEvent = snapshot.recentEvents[snapshot.recentEvents.length - 1];
-  const lastEventTimestamp = lastEvent?.createdAt ?? "";
 
   return {
-    sessionMap,
+    agentStateMap,
     lastMessageTimestamp,
     mergeStatusMap,
-    lastEventTimestamp,
-    metricsKey: metricsKey(snapshot.metricsSessions),
+    metricsKey: metricsKey(snapshot.metrics),
+    lastTotalMessages: snapshot.metrics.totalMessages,
   };
 }
 
-function computeDelta(state: ClientState): SwarmDelta | null {
-  const currentSessions = querySessions();
-  const newMessages = state.lastMessageTimestamp
-    ? queryNewMessages(state.lastMessageTimestamp)
-    : [];
-  const currentMerge = queryMergeQueue();
-  const newEvents = state.lastEventTimestamp
-    ? queryNewEvents(state.lastEventTimestamp)
-    : [];
-  const currentMetrics = queryMetricsSessions();
+/**
+ * Compute incremental updates since the last poll.
+ * Returns an array of StateUpdate events to send (empty = no changes).
+ */
+function computeUpdates(state: ClientState): StateUpdate[] {
+  const updates: StateUpdate[] = [];
 
-  // Changed or new sessions
-  const sessionsChanged: AgentSession[] = [];
-  for (const session of currentSessions) {
-    const prev = state.sessionMap.get(session.id);
-    if (
-      !prev ||
-      prev.state !== session.state ||
-      prev.lastActivity !== session.lastActivity ||
-      prev.escalationLevel !== session.escalationLevel
-    ) {
-      sessionsChanged.push(session);
+  const sessions = querySessions();
+  const vizAgents = sessions.map(toAgent);
+
+  // Agent changes (new agents or state/activity changes)
+  for (const agent of vizAgents) {
+    const prev = state.agentStateMap.get(agent.name);
+    if (prev === undefined || prev !== agentKey(agent)) {
+      updates.push({ type: "agent_update", data: agent });
     }
   }
 
-  // Changed merge queue entries
-  const mergeQueueChanged: MergeQueueEntry[] = [];
+  // New messages since last poll
+  if (state.lastMessageTimestamp) {
+    const newMail = queryNewMessages(state.lastMessageTimestamp).map(toAgentMessage);
+    for (const msg of newMail) {
+      updates.push({ type: "message_event", data: msg });
+    }
+    if (newMail.length > 0) {
+      const lastNew = newMail[newMail.length - 1];
+      if (lastNew) {
+        state.lastMessageTimestamp = new Date(lastNew.createdAt).toISOString();
+      }
+    }
+  }
+
+  // Merge queue changes
+  const currentMerge = queryMergeQueue().map(toVizMergeEntry);
   for (const entry of currentMerge) {
-    const prevStatus = state.mergeStatusMap.get(entry.id);
-    if (prevStatus === undefined || prevStatus !== entry.status) {
-      mergeQueueChanged.push(entry);
+    const prev = state.mergeStatusMap.get(entry.branchName);
+    if (prev === undefined || prev !== entry.status) {
+      updates.push({ type: "merge_update", data: entry });
     }
   }
 
-  // Changed metrics (compare entire set via key)
-  const newMetricsKey = metricsKey(currentMetrics);
-  const metricsUpdated: MetricsSession[] =
-    newMetricsKey !== state.metricsKey ? currentMetrics : [];
-
-  if (
-    sessionsChanged.length === 0 &&
-    newMessages.length === 0 &&
-    mergeQueueChanged.length === 0 &&
-    newEvents.length === 0 &&
-    metricsUpdated.length === 0
-  ) {
-    return null;
+  // Metrics update (check if anything changed)
+  const totalMessages = queryMessageCount();
+  const metricsSessions = queryMetricsSessions();
+  const currentMetrics = computeMetrics(sessions, totalMessages, metricsSessions);
+  const currentKey = metricsKey(currentMetrics);
+  if (currentKey !== state.metricsKey) {
+    updates.push({ type: "metrics_update", data: currentMetrics });
+    state.metricsKey = currentKey;
+    state.lastTotalMessages = totalMessages;
   }
 
-  // Advance tracking state
-  state.sessionMap.clear();
-  for (const s of currentSessions) {
-    state.sessionMap.set(s.id, s);
-  }
-  const lastNew = newMessages[newMessages.length - 1];
-  if (lastNew) {
-    state.lastMessageTimestamp = lastNew.createdAt;
+  // Advance agent tracking state
+  state.agentStateMap.clear();
+  for (const a of vizAgents) {
+    state.agentStateMap.set(a.name, agentKey(a));
   }
   state.mergeStatusMap.clear();
   for (const e of currentMerge) {
-    state.mergeStatusMap.set(e.id, e.status);
-  }
-  const lastNewEvent = newEvents[newEvents.length - 1];
-  if (lastNewEvent) {
-    state.lastEventTimestamp = lastNewEvent.createdAt;
-  }
-  if (metricsUpdated.length > 0) {
-    state.metricsKey = newMetricsKey;
+    state.mergeStatusMap.set(e.branchName, e.status);
   }
 
-  return {
-    timestamp: new Date().toISOString(),
-    sessionsChanged,
-    newMessages,
-    mergeQueueChanged,
-    newEvents,
-    metricsUpdated,
-  };
+  return updates;
 }
 
 // ── Static file serving ──────────────────────────────────────────────────────
 
 async function serveStatic(pathname: string): Promise<Response> {
-  // Normalize: strip leading slash, default to index.html
   const rel = pathname === "/" ? "index.html" : pathname.replace(/^\//, "");
 
-  // Prevent directory traversal
   if (rel.includes("..")) {
     return new Response("Forbidden", { status: 403 });
   }
@@ -348,7 +294,6 @@ async function serveStatic(pathname: string): Promise<Response> {
   const file = Bun.file(filePath);
 
   if (!(await file.exists())) {
-    // SPA fallback: serve index.html for unknown paths
     const index = Bun.file(join(STATIC_DIR, "index.html"));
     if (await index.exists()) {
       return new Response(index, {
@@ -379,15 +324,13 @@ export const server = Bun.serve({
       return undefined;
     }
 
-    // Health check
     if (url.pathname === "/health") {
       return new Response(
-        JSON.stringify({ status: "ok", databases: { events: eventsDb !== null, metrics: metricsDb !== null } }),
-        { headers: { "Content-Type": "application/json" } }
+        JSON.stringify({ status: "ok", databases: { metrics: metricsDb !== null } }),
+        { headers: { "Content-Type": "application/json" } },
       );
     }
 
-    // Serve static files for everything else
     return serveStatic(url.pathname);
   },
 
@@ -426,12 +369,13 @@ setInterval(() => {
 
   for (const [ws, state] of clientStates) {
     try {
-      const delta = computeDelta(state);
-      if (!delta) continue;
-      const msg: ServerMessage = { type: "delta", data: delta };
-      ws.send(JSON.stringify(msg));
+      const updates = computeUpdates(state);
+      for (const update of updates) {
+        const msg: ServerMessage = { type: "update", data: update };
+        ws.send(JSON.stringify(msg));
+      }
     } catch (err) {
-      console.error("Error computing or sending delta:", err);
+      console.error("Error computing or sending updates:", err);
     }
   }
 }, POLL_INTERVAL_MS);

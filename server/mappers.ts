@@ -3,8 +3,12 @@
  * Separated for testability (no database dependency).
  */
 import type {
+  Agent,
+  AgentCapability,
+  AgentMessage,
   AgentSession,
   AgentState,
+  DbMergeQueueEntry,
   EventLevel,
   MailMessage,
   MergeQueueEntry,
@@ -14,6 +18,7 @@ import type {
   MessageType,
   MetricsSession,
   OvrstoryEvent,
+  SwarmMetrics,
   TokenSnapshot,
 } from "../shared/types.ts";
 
@@ -104,6 +109,8 @@ export interface TokenSnapshotRow {
   created_at: string;
 }
 
+// ── DB row → server-internal types ──────────────────────────────────────────
+
 export function mapSession(row: SessionRow): AgentSession {
   return {
     id: row.id,
@@ -140,7 +147,7 @@ export function mapMessage(row: MessageRow): MailMessage {
   };
 }
 
-export function mapMergeEntry(row: MergeQueueRow): MergeQueueEntry {
+export function mapMergeEntry(row: MergeQueueRow): DbMergeQueueEntry {
   let filesModified: string[];
   try {
     filesModified = JSON.parse(row.files_modified) as string[];
@@ -206,5 +213,71 @@ export function mapTokenSnapshot(row: TokenSnapshotRow): TokenSnapshot {
     estimatedCostUsd: row.estimated_cost_usd,
     modelUsed: row.model_used,
     createdAt: row.created_at,
+  };
+}
+
+// ── server-internal types → viz protocol types ───────────────────────────────
+
+const KNOWN_CAPABILITIES = new Set<string>([
+  'coordinator', 'lead', 'scout', 'builder', 'reviewer', 'merger',
+]);
+
+/** Map AgentSession to viz-layer Agent for WebSocket transmission */
+export function toAgent(s: AgentSession): Agent {
+  const cap = KNOWN_CAPABILITIES.has(s.capability)
+    ? (s.capability as AgentCapability)
+    : 'builder';
+  return {
+    name: s.agentName,
+    capability: cap,
+    state: s.state,
+    parentAgent: s.parentAgent,
+    depth: s.depth,
+    beadId: s.beadId || null,
+    lastActivity: new Date(s.lastActivity).getTime(),
+  };
+}
+
+/** Map MailMessage to viz-layer AgentMessage for WebSocket transmission */
+export function toAgentMessage(m: MailMessage): AgentMessage {
+  return {
+    id: m.id,
+    from: m.fromAgent,
+    to: m.toAgent,
+    type: m.type,
+    priority: m.priority,
+    subject: m.subject,
+    createdAt: new Date(m.createdAt).getTime(),
+  };
+}
+
+/** Map DbMergeQueueEntry to viz-layer MergeQueueEntry for WebSocket transmission */
+export function toVizMergeEntry(e: DbMergeQueueEntry): MergeQueueEntry {
+  return {
+    branchName: e.branchName,
+    agentName: e.agentName,
+    status: e.status,
+    filesModified: e.filesModified,
+  };
+}
+
+/** Compute SwarmMetrics from current DB state */
+export function computeMetrics(
+  sessions: AgentSession[],
+  totalMessages: number,
+  metricsSessions: MetricsSession[],
+): SwarmMetrics {
+  const activeAgents = sessions.filter(
+    (s) => s.state === 'working' || s.state === 'booting',
+  ).length;
+  const totalCost = metricsSessions.reduce(
+    (sum, s) => sum + (s.estimatedCostUsd ?? 0),
+    0,
+  );
+  return {
+    totalAgents: sessions.length,
+    activeAgents,
+    totalMessages,
+    totalCost,
   };
 }
