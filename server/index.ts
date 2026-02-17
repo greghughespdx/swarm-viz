@@ -30,7 +30,7 @@ import type {
 
 const OVERSTORY_DIR =
   process.env["OVERSTORY_DIR"] ?? `${import.meta.dir}/../.overstory`;
-const PORT = parseInt(process.env["PORT"] ?? "3001", 10);
+const PORT = parseInt(process.env["PORT"] ?? "3000", 10);
 const POLL_INTERVAL_MS = parseInt(process.env["POLL_INTERVAL_MS"] ?? "500", 10);
 const STATIC_DIR = process.env["STATIC_DIR"] ?? join(import.meta.dir, "../dist");
 const MAX_RECENT_MESSAGES = 50;
