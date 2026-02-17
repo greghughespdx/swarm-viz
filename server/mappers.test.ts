@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
+  computeMetrics,
   mapEvent,
   mapMessage,
   mapMergeEntry,
   mapMetricsSession,
   mapSession,
   mapTokenSnapshot,
+  toAgent,
+  toAgentMessage,
+  toVizMergeEntry,
 } from "./mappers.ts";
 import type {
   EventRow,
@@ -331,6 +335,242 @@ describe("mapMetricsSession", () => {
     expect(session.parentAgent).toBeNull();
     expect(session.estimatedCostUsd).toBeNull();
     expect(session.modelUsed).toBeNull();
+  });
+});
+
+// ── Viz mapper tests ─────────────────────────────────────────────────────────
+
+describe("toAgent", () => {
+  test("maps AgentSession to viz Agent", () => {
+    const session = mapSession({
+      id: "sess-001",
+      agent_name: "server-builder",
+      capability: "builder",
+      worktree_path: "/path",
+      branch_name: "overstory/server-builder/task-1",
+      bead_id: "task-1",
+      tmux_session: "overstory-0",
+      state: "working",
+      pid: 123,
+      parent_agent: "server-lead",
+      depth: 2,
+      run_id: null,
+      started_at: "2026-02-16T20:00:00.000Z",
+      last_activity: "2026-02-16T20:05:00.000Z",
+      escalation_level: 0,
+      stalled_since: null,
+    });
+
+    const agent = toAgent(session);
+
+    expect(agent.name).toBe("server-builder");
+    expect(agent.capability).toBe("builder");
+    expect(agent.state).toBe("working");
+    expect(agent.parentAgent).toBe("server-lead");
+    expect(agent.depth).toBe(2);
+    expect(agent.beadId).toBe("task-1");
+    expect(agent.lastActivity).toBe(new Date("2026-02-16T20:05:00.000Z").getTime());
+  });
+
+  test("falls back to 'builder' for unknown capability", () => {
+    const session = mapSession({
+      id: "sess-002",
+      agent_name: "unknown-agent",
+      capability: "some-future-capability",
+      worktree_path: "/path",
+      branch_name: "branch",
+      bead_id: "",
+      tmux_session: "tmux-0",
+      state: "booting",
+      pid: null,
+      parent_agent: null,
+      depth: 0,
+      run_id: null,
+      started_at: "2026-02-16T20:00:00.000Z",
+      last_activity: "2026-02-16T20:00:00.000Z",
+      escalation_level: 0,
+      stalled_since: null,
+    });
+
+    expect(toAgent(session).capability).toBe("builder");
+  });
+
+  test("maps empty beadId to null", () => {
+    const session = mapSession({
+      id: "sess-003",
+      agent_name: "a",
+      capability: "coordinator",
+      worktree_path: "/p",
+      branch_name: "main",
+      bead_id: "",
+      tmux_session: "t",
+      state: "working",
+      pid: null,
+      parent_agent: null,
+      depth: 0,
+      run_id: null,
+      started_at: "2026-02-16T20:00:00.000Z",
+      last_activity: "2026-02-16T20:00:00.000Z",
+      escalation_level: 0,
+      stalled_since: null,
+    });
+
+    expect(toAgent(session).beadId).toBeNull();
+  });
+});
+
+describe("toAgentMessage", () => {
+  test("maps MailMessage to viz AgentMessage", () => {
+    const msg = mapMessage({
+      id: "msg-001",
+      from_agent: "server-builder",
+      to_agent: "server-lead",
+      subject: "Worker done: task-1",
+      body: "body",
+      type: "worker_done",
+      priority: "normal",
+      thread_id: null,
+      read: 0,
+      created_at: "2026-02-16T20:10:00.000Z",
+    });
+
+    const vizMsg = toAgentMessage(msg);
+
+    expect(vizMsg.id).toBe("msg-001");
+    expect(vizMsg.from).toBe("server-builder");
+    expect(vizMsg.to).toBe("server-lead");
+    expect(vizMsg.type).toBe("worker_done");
+    expect(vizMsg.priority).toBe("normal");
+    expect(vizMsg.subject).toBe("Worker done: task-1");
+    expect(vizMsg.createdAt).toBe(new Date("2026-02-16T20:10:00.000Z").getTime());
+  });
+});
+
+describe("toVizMergeEntry", () => {
+  test("maps DbMergeQueueEntry to viz MergeQueueEntry (strips DB-only fields)", () => {
+    const dbEntry = mapMergeEntry({
+      id: 1,
+      branch_name: "overstory/builder/task-1",
+      bead_id: "task-1",
+      agent_name: "builder",
+      files_modified: '["server/index.ts"]',
+      enqueued_at: "2026-02-16T20:15:00.000Z",
+      status: "pending",
+      resolved_tier: null,
+    });
+
+    const vizEntry = toVizMergeEntry(dbEntry);
+
+    expect(vizEntry.branchName).toBe("overstory/builder/task-1");
+    expect(vizEntry.agentName).toBe("builder");
+    expect(vizEntry.status).toBe("pending");
+    expect(vizEntry.filesModified).toEqual(["server/index.ts"]);
+    // DB-only fields should not be present
+    expect((vizEntry as { id?: number }).id).toBeUndefined();
+    expect((vizEntry as { enqueuedAt?: string }).enqueuedAt).toBeUndefined();
+  });
+});
+
+describe("computeMetrics", () => {
+  const makeSession = (state: string, name: string) =>
+    mapSession({
+      id: name,
+      agent_name: name,
+      capability: "builder",
+      worktree_path: "/p",
+      branch_name: "b",
+      bead_id: "t",
+      tmux_session: "s",
+      state,
+      pid: null,
+      parent_agent: null,
+      depth: 1,
+      run_id: null,
+      started_at: "2026-02-16T20:00:00.000Z",
+      last_activity: "2026-02-16T20:00:00.000Z",
+      escalation_level: 0,
+      stalled_since: null,
+    });
+
+  test("counts agents and active agents correctly", () => {
+    const sessions = [
+      makeSession("working", "a"),
+      makeSession("booting", "b"),
+      makeSession("completed", "c"),
+      makeSession("stalled", "d"),
+    ];
+
+    const metrics = computeMetrics(sessions, 10, []);
+    expect(metrics.totalAgents).toBe(4);
+    expect(metrics.activeAgents).toBe(2); // working + booting
+    expect(metrics.totalMessages).toBe(10);
+    expect(metrics.totalCost).toBe(0);
+  });
+
+  test("sums estimated cost from metrics sessions", () => {
+    const metricsSessions = [
+      mapMetricsSession({
+        agent_name: "a",
+        bead_id: "t1",
+        capability: "builder",
+        started_at: "2026-02-16T20:00:00.000Z",
+        completed_at: null,
+        duration_ms: 0,
+        exit_code: null,
+        merge_result: null,
+        parent_agent: null,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        estimated_cost_usd: 0.10,
+        model_used: null,
+      }),
+      mapMetricsSession({
+        agent_name: "b",
+        bead_id: "t2",
+        capability: "lead",
+        started_at: "2026-02-16T20:00:00.000Z",
+        completed_at: null,
+        duration_ms: 0,
+        exit_code: null,
+        merge_result: null,
+        parent_agent: null,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        estimated_cost_usd: 0.25,
+        model_used: null,
+      }),
+    ];
+
+    const metrics = computeMetrics([], 0, metricsSessions);
+    expect(metrics.totalCost).toBeCloseTo(0.35);
+  });
+
+  test("handles null estimatedCostUsd gracefully", () => {
+    const metricsSessions = [
+      mapMetricsSession({
+        agent_name: "a",
+        bead_id: "t1",
+        capability: "builder",
+        started_at: "2026-02-16T20:00:00.000Z",
+        completed_at: null,
+        duration_ms: 0,
+        exit_code: null,
+        merge_result: null,
+        parent_agent: null,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        estimated_cost_usd: null,
+        model_used: null,
+      }),
+    ];
+
+    expect(computeMetrics([], 0, metricsSessions).totalCost).toBe(0);
   });
 });
 

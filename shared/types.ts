@@ -1,6 +1,6 @@
 // Protocol types shared between server and client
 
-// ── Agent sessions (sessions.db) ────────────────────────────────────────────
+// ── Agent sessions (sessions.db) — server-internal ──────────────────────────
 
 export type AgentState = 'booting' | 'working' | 'completed' | 'stalled' | 'zombie';
 
@@ -23,7 +23,7 @@ export interface AgentSession {
   stalledSince: string | null;
 }
 
-// ── Mail messages (mail.db) ─────────────────────────────────────────────────
+// ── Mail messages (mail.db) — server-internal ────────────────────────────────
 
 export type MessageType =
   | 'status'
@@ -54,12 +54,13 @@ export interface MailMessage {
   createdAt: string;
 }
 
-// ── Merge queue (merge-queue.db) ────────────────────────────────────────────
+// ── Merge queue (merge-queue.db) — server-internal ──────────────────────────
 
 export type MergeStatus = 'pending' | 'merging' | 'merged' | 'conflict' | 'failed';
 export type MergeTier = 'clean-merge' | 'auto-resolve' | 'ai-resolve' | 'reimagine';
 
-export interface MergeQueueEntry {
+/** Full DB-mapped merge queue entry (server-internal, not sent over wire) */
+export interface DbMergeQueueEntry {
   id: number;
   branchName: string;
   beadId: string;
@@ -70,7 +71,7 @@ export interface MergeQueueEntry {
   resolvedTier: MergeTier | null;
 }
 
-// ── Events (events.db) ──────────────────────────────────────────────────────
+// ── Events (events.db) — server-internal ────────────────────────────────────
 
 export type EventLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -88,7 +89,7 @@ export interface OvrstoryEvent {
   createdAt: string;
 }
 
-// ── Metrics (metrics.db) ────────────────────────────────────────────────────
+// ── Metrics (metrics.db) — server-internal ──────────────────────────────────
 
 export interface MetricsSession {
   agentName: string;
@@ -120,33 +121,72 @@ export interface TokenSnapshot {
   createdAt: string;
 }
 
-// ── WebSocket protocol (server → client) ────────────────────────────────────
+// ── Viz protocol types (WebSocket wire format, server → client) ───────────────
+
+export type AgentCapability =
+  | 'coordinator'
+  | 'lead'
+  | 'scout'
+  | 'builder'
+  | 'reviewer'
+  | 'merger';
+
+/** Visualization-layer agent (mapped from AgentSession, safe to send to browser) */
+export interface Agent {
+  name: string;
+  capability: AgentCapability;
+  state: AgentState;
+  parentAgent: string | null;
+  depth: number;
+  beadId: string | null;
+  /** Unix timestamp in milliseconds */
+  lastActivity: number;
+}
+
+/** Visualization-layer message (mapped from MailMessage, safe to send to browser) */
+export interface AgentMessage {
+  id: string;
+  from: string;
+  to: string;
+  type: string;
+  priority: string;
+  subject: string;
+  /** Unix timestamp in milliseconds */
+  createdAt: number;
+}
+
+/** Visualization-layer merge queue entry */
+export interface MergeQueueEntry {
+  branchName: string;
+  agentName: string;
+  status: MergeStatus;
+  filesModified: string[];
+}
+
+/** Aggregated swarm metrics displayed in HUD */
+export interface SwarmMetrics {
+  totalAgents: number;
+  activeAgents: number;
+  totalMessages: number;
+  totalCost: number;
+}
 
 /** Full state snapshot sent on initial connection */
-export interface SwarmSnapshot {
-  timestamp: string;
-  sessions: AgentSession[];
-  recentMessages: MailMessage[];
+export interface StateSnapshot {
+  agents: Agent[];
+  messages: AgentMessage[];
   mergeQueue: MergeQueueEntry[];
-  recentEvents: OvrstoryEvent[];
-  metricsSessions: MetricsSession[];
+  metrics: SwarmMetrics;
 }
 
-/** Incremental update sent on state changes */
-export interface SwarmDelta {
-  timestamp: string;
-  /** Sessions whose state or activity changed (includes new sessions) */
-  sessionsChanged: AgentSession[];
-  /** Messages received since last snapshot/delta */
-  newMessages: MailMessage[];
-  /** Merge queue entries whose status changed */
-  mergeQueueChanged: MergeQueueEntry[];
-  /** Events received since last snapshot/delta */
-  newEvents: OvrstoryEvent[];
-  /** Metrics sessions updated since last snapshot/delta */
-  metricsUpdated: MetricsSession[];
-}
+/** Incremental update sent when a single entity changes */
+export type StateUpdate =
+  | { type: 'agent_update'; data: Agent }
+  | { type: 'message_event'; data: AgentMessage }
+  | { type: 'merge_update'; data: MergeQueueEntry }
+  | { type: 'metrics_update'; data: SwarmMetrics };
 
+/** WebSocket protocol message (server → client) */
 export type ServerMessage =
-  | { type: 'snapshot'; data: SwarmSnapshot }
-  | { type: 'delta'; data: SwarmDelta };
+  | { type: 'snapshot'; data: StateSnapshot }
+  | { type: 'update'; data: StateUpdate };

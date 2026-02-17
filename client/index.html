@@ -5,13 +5,73 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Swarm Viz</title>
     <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
-      #canvas { display: block; width: 100%; height: 100%; }
+      *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+
+      #hud {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      #status {
+        position: absolute;
+        top: 14px;
+        right: 18px;
+        font-family: 'SF Mono', 'Fira Mono', 'Cascadia Code', monospace;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        color: rgba(0, 240, 180, 0.6);
+        transition: color 0.4s ease;
+      }
+
+      #status.disconnected {
+        color: rgba(255, 60, 60, 0.6);
+      }
+
+      #stats {
+        position: absolute;
+        bottom: 14px;
+        left: 18px;
+        font-family: 'SF Mono', 'Fira Mono', 'Cascadia Code', monospace;
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        color: rgba(60, 120, 200, 0.45);
+        line-height: 1.7;
+        white-space: pre;
+      }
+
+      #health-bar {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 2px;
+        background: rgba(0, 255, 180, 0.08);
+        transition: opacity 0.5s;
+      }
+
+      #health-bar-fill {
+        height: 100%;
+        background: rgba(0, 255, 180, 0.5);
+        transition: width 1s ease, background 1s ease;
+      }
     </style>
   </head>
   <body>
-    <canvas id="canvas"></canvas>
-    <script type="module" src="main.js"></script>
+    <div id="hud">
+      <div id="status">⬤ connecting</div>
+      <div id="stats"></div>
+      <div id="health-bar">
+        <div id="health-bar-fill" style="width: 100%"></div>
+      </div>
+    </div>
+    <script type="module" src="./main.js"></script>
   </body>
 </html>
