@@ -1,0 +1,17 @@
+{
+  "name": "swarm-viz",
+  "version": "0.1.0",
+  "description": "Real-time visualization of Overstory multi-agent swarm activity",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run server/index.ts",
+    "build": "bun build client/main.ts --outdir dist --minify"
+  },
+  "dependencies": {
+    "three": "^0.172.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.172.0",
+    "typescript": "^5.9.0"
+  }
+}
