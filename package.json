@@ -5,13 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "bun run server/index.ts",
-    "build": "bun build client/main.ts --outdir dist --minify"
+    "build": "bun build client/main.ts --outdir dist --minify",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "three": "^0.172.0"
   },
   "devDependencies": {
     "@types/three": "^0.172.0",
+    "bun-types": "^1.1.0",
     "typescript": "^5.9.0"
   }
 }
