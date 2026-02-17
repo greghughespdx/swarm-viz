@@ -367,9 +367,9 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			const geo = new THREE.BufferGeometry();
 			geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
 			const mat = new THREE.LineBasicMaterial({
-				color: 0x0a1e30,
+				color: 0x1a4a6a,
 				transparent: true,
-				opacity: 0.5,
+				opacity: 0.6,
 			});
 			const line = new THREE.Line(geo, mat);
 			scene.add(line);
