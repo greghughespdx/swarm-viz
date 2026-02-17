@@ -3,6 +3,10 @@ import type { ServerWebSocket } from "bun";
 import { join } from "node:path";
 import type {
   Agent,
+  AgentSession,
+  DbMergeQueueEntry,
+  MailMessage,
+  MetricsSession,
   ServerMessage,
   StateSnapshot,
   StateUpdate,
@@ -24,6 +28,7 @@ import type {
   MetricsSessionRow,
   SessionRow,
 } from "./mappers.ts";
+import { DemoSimulator } from "./simulator.ts";
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -33,6 +38,7 @@ const PORT = parseInt(process.env["PORT"] ?? "3000", 10);
 const POLL_INTERVAL_MS = parseInt(process.env["POLL_INTERVAL_MS"] ?? "500", 10);
 const STATIC_DIR = process.env["STATIC_DIR"] ?? join(import.meta.dir, "../dist");
 const MAX_RECENT_MESSAGES = 50;
+const DEMO_MODE = process.env["DEMO_MODE"] === "true";
 
 // ── Graceful database open ────────────────────────────────────────────────────
 
@@ -51,44 +57,6 @@ function openDb(path: string, label: string, required: boolean): Database | null
   }
 }
 
-// Core databases (required) — exit if unavailable
-const sessionsDb = openDb(`${OVERSTORY_DIR}/sessions.db`, "sessions.db", true)!;
-const mailDb = openDb(`${OVERSTORY_DIR}/mail.db`, "mail.db", true)!;
-const mergeQueueDb = openDb(`${OVERSTORY_DIR}/merge-queue.db`, "merge-queue.db", true)!;
-
-// Optional databases — continue with degraded data if unavailable
-let metricsDb: Database | null = openDb(`${OVERSTORY_DIR}/metrics.db`, "metrics.db", false);
-
-// ── Prepared statements ──────────────────────────────────────────────────────
-
-const stmtAllSessions = sessionsDb.query<SessionRow, []>(
-  "SELECT * FROM sessions ORDER BY depth ASC, started_at ASC"
-);
-
-const stmtRecentMessages = mailDb.query<MessageRow, [number]>(
-  `SELECT id, from_agent, to_agent, subject, body, type, priority,
-          thread_id, read, created_at
-   FROM messages
-   ORDER BY created_at DESC
-   LIMIT ?`
-);
-
-const stmtNewMessages = mailDb.query<MessageRow, [string]>(
-  `SELECT id, from_agent, to_agent, subject, body, type, priority,
-          thread_id, read, created_at
-   FROM messages
-   WHERE created_at > ?
-   ORDER BY created_at ASC`
-);
-
-const stmtMessageCount = mailDb.query<{ count: number }, []>(
-  "SELECT COUNT(*) as count FROM messages"
-);
-
-const stmtMergeQueue = mergeQueueDb.query<MergeQueueRow, []>(
-  "SELECT * FROM merge_queue WHERE status IN ('pending', 'merging') ORDER BY enqueued_at DESC"
-);
-
 function makeMetricsStatements(db: Database) {
   return {
     allSessions: db.query<MetricsSessionRow, []>(
@@ -104,51 +72,97 @@ function makeMetricsStatements(db: Database) {
 
 type MetricsStatements = ReturnType<typeof makeMetricsStatements>;
 
-let metricsStmts: MetricsStatements | null = metricsDb
-  ? makeMetricsStatements(metricsDb)
-  : null;
+// ── Setup: demo mode or live databases ──────────────────────────────────────
 
-// ── Query helpers (return server-internal types) ─────────────────────────────
+let _simulator: DemoSimulator | null = null;
+let metricsDb: Database | null = null;
 
-function querySessions() {
-  return stmtAllSessions.all().map(mapSession);
-}
+let querySessions: () => AgentSession[];
+let queryRecentMessages: () => MailMessage[];
+let queryNewMessages: (since: string) => MailMessage[];
+let queryMessageCount: () => number;
+let queryMergeQueue: () => DbMergeQueueEntry[];
+let queryMetricsSessions: () => MetricsSession[];
 
-function queryRecentMessages() {
-  return stmtRecentMessages.all(MAX_RECENT_MESSAGES).map(mapMessage).reverse();
-}
+if (DEMO_MODE) {
+  _simulator = new DemoSimulator();
+  const sim = _simulator;
+  querySessions = () => sim.querySessions();
+  queryRecentMessages = () => sim.queryRecentMessages();
+  queryNewMessages = (since) => sim.queryNewMessages(since);
+  queryMessageCount = () => sim.queryMessageCount();
+  queryMergeQueue = () => sim.queryMergeQueue();
+  queryMetricsSessions = () => sim.queryMetricsSessions();
+} else {
+  // Core databases (required) — exit if unavailable
+  const sessionsDb = openDb(`${OVERSTORY_DIR}/sessions.db`, "sessions.db", true)!;
+  const mailDb = openDb(`${OVERSTORY_DIR}/mail.db`, "mail.db", true)!;
+  const mergeQueueDb = openDb(`${OVERSTORY_DIR}/merge-queue.db`, "merge-queue.db", true)!;
 
-function queryNewMessages(since: string) {
-  return stmtNewMessages.all(since).map(mapMessage);
-}
+  // Optional databases — continue with degraded data if unavailable
+  metricsDb = openDb(`${OVERSTORY_DIR}/metrics.db`, "metrics.db", false);
 
-function queryMessageCount(): number {
-  const row = stmtMessageCount.get();
-  return row?.count ?? 0;
-}
+  // Prepared statements
+  const stmtAllSessions = sessionsDb.query<SessionRow, []>(
+    "SELECT * FROM sessions ORDER BY depth ASC, started_at ASC"
+  );
 
-function queryMergeQueue() {
-  return stmtMergeQueue.all().map(mapMergeEntry);
-}
+  const stmtRecentMessages = mailDb.query<MessageRow, [number]>(
+    `SELECT id, from_agent, to_agent, subject, body, type, priority,
+            thread_id, read, created_at
+     FROM messages
+     ORDER BY created_at DESC
+     LIMIT ?`
+  );
 
-function queryMetricsSessions() {
-  if (!metricsStmts) {
-    if (metricsDb === null) {
-      metricsDb = openDb(`${OVERSTORY_DIR}/metrics.db`, "metrics.db", false);
-      if (metricsDb) {
-        metricsStmts = makeMetricsStatements(metricsDb);
+  const stmtNewMessages = mailDb.query<MessageRow, [string]>(
+    `SELECT id, from_agent, to_agent, subject, body, type, priority,
+            thread_id, read, created_at
+     FROM messages
+     WHERE created_at > ?
+     ORDER BY created_at ASC`
+  );
+
+  const stmtMessageCount = mailDb.query<{ count: number }, []>(
+    "SELECT COUNT(*) as count FROM messages"
+  );
+
+  const stmtMergeQueue = mergeQueueDb.query<MergeQueueRow, []>(
+    "SELECT * FROM merge_queue WHERE status IN ('pending', 'merging') ORDER BY enqueued_at DESC"
+  );
+
+  let metricsStmts: MetricsStatements | null = metricsDb
+    ? makeMetricsStatements(metricsDb)
+    : null;
+
+  querySessions = () => stmtAllSessions.all().map(mapSession);
+  queryRecentMessages = () =>
+    stmtRecentMessages.all(MAX_RECENT_MESSAGES).map(mapMessage).reverse();
+  queryNewMessages = (since) => stmtNewMessages.all(since).map(mapMessage);
+  queryMessageCount = () => {
+    const row = stmtMessageCount.get();
+    return row?.count ?? 0;
+  };
+  queryMergeQueue = () => stmtMergeQueue.all().map(mapMergeEntry);
+  queryMetricsSessions = () => {
+    if (!metricsStmts) {
+      if (metricsDb === null) {
+        metricsDb = openDb(`${OVERSTORY_DIR}/metrics.db`, "metrics.db", false);
+        if (metricsDb) {
+          metricsStmts = makeMetricsStatements(metricsDb);
+        }
       }
+      if (!metricsStmts) return [];
     }
-    if (!metricsStmts) return [];
-  }
-  try {
-    return metricsStmts.allSessions.all().map(mapMetricsSession);
-  } catch (err) {
-    console.warn("[swarm-viz] Error querying metrics sessions:", err);
-    metricsStmts = null;
-    metricsDb = null;
-    return [];
-  }
+    try {
+      return metricsStmts.allSessions.all().map(mapMetricsSession);
+    } catch (err) {
+      console.warn("[swarm-viz] Error querying metrics sessions:", err);
+      metricsStmts = null;
+      metricsDb = null;
+      return [];
+    }
+  };
 }
 
 // ── Viz-layer snapshot builder ───────────────────────────────────────────────
@@ -358,6 +372,9 @@ export const server = Bun.serve({
   },
 });
 
+if (DEMO_MODE) {
+  console.log("[swarm-viz] Demo mode active");
+}
 console.log(`[swarm-viz] Server listening on http://localhost:${PORT}`);
 console.log(`[swarm-viz] WebSocket endpoint: ws://localhost:${PORT}/ws`);
 console.log(`[swarm-viz] Static files from: ${STATIC_DIR}`);
@@ -365,6 +382,7 @@ console.log(`[swarm-viz] Static files from: ${STATIC_DIR}`);
 // ── Poll loop ────────────────────────────────────────────────────────────────
 
 setInterval(() => {
+  if (_simulator) _simulator.tick();
   if (clientStates.size === 0) return;
 
   for (const [ws, state] of clientStates) {

@@ -5,6 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "bun run server/index.ts",
+		"demo": "DEMO_MODE=true bun run server/index.ts",
 		"build": "bun build client/main.ts --outdir dist --minify && cp client/index.html dist/index.html",
 		"typecheck": "tsc --noEmit",
 		"lint": "biome check client/"
