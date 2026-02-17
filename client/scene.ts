@@ -343,6 +343,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 		if (agent.state === "completed" && !node.completing) {
 			node.completing = true;
 			node.fadeT = 0;
+			node.label.visible = false; // hide label as orb fades out
 		}
 	}
 
@@ -676,6 +677,8 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			flight.t += dt * 0.55; // full arc in ~1.8 s
 
 			if (flight.t >= 1.0) {
+				flight.msgLabel.removeFromParent();
+				flight.msgLabel.element.remove();
 				scene.remove(flight.packet);
 				scene.remove(flight.arcLine);
 				flight.packet.geometry.dispose();
@@ -814,6 +817,8 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			edges.clear();
 
 			for (const f of flights.values()) {
+				f.msgLabel.removeFromParent();
+				f.msgLabel.element.remove();
 				scene.remove(f.packet);
 				scene.remove(f.arcLine);
 				f.packet.geometry.dispose();
