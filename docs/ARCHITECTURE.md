@@ -1,6 +1,6 @@
 # swarm-viz Architecture
 
-swarm-viz is a real-time WebGL dashboard that visualizes the state of an [Overstory](https://github.com/gregslab/overstory) multi-agent swarm. This document covers the full data flow from Overstory's SQLite databases through the WebSocket protocol to the Three.js renderer.
+swarm-viz is a real-time WebGL dashboard that visualizes the state of an [Overstory](https://github.com/jayminwest/overstory) multi-agent swarm. This document covers the full data flow from Overstory's SQLite databases through the WebSocket protocol to the Three.js renderer.
 
 ---
 
@@ -15,7 +15,7 @@ graph LR
         ME[(metrics.db)]
     end
 
-    subgraph Server["swarm-viz server (Bun, port 3000)"]
+    subgraph Server["swarm-viz server (Bun, port 33020)"]
         POLL[Poll loop\n500ms interval]
         SNAP[Snapshot builder]
         DELTA[Delta tracker\nper-client state]
@@ -243,7 +243,7 @@ All mapping is pure functions with no database dependency — this makes them tr
 
 ## Overstory Context
 
-swarm-viz is a side-car observer for [Overstory](https://github.com/gregslab/overstory), a multi-agent coordination framework. Overstory runs hierarchical swarms of Claude agents in isolated git worktrees, coordinating them through:
+swarm-viz is a side-car observer for [Overstory](https://github.com/jayminwest/overstory), a multi-agent coordination framework. Overstory runs hierarchical swarms of Claude agents in isolated git worktrees, coordinating them through:
 
 - **Beads** (`bd`) — issue tracking and task dispatch
 - **Mail** (`overstory mail`) — typed inter-agent messaging stored in `mail.db`
@@ -252,7 +252,7 @@ swarm-viz is a side-car observer for [Overstory](https://github.com/gregslab/ove
 
 swarm-viz reads the same state files Overstory maintains and makes the swarm's internal activity visible in real time. It is itself a demonstration of the pattern: this project was built by an Overstory swarm of 21 agents working in parallel worktrees.
 
-The patterns used here — parallel builders, isolated worktrees, typed mail protocol, merge pipeline — are documented in the [Agentic Engineering Book](https://github.com/gregslab/agentic-engineering-book), a reference for designing and operating multi-agent development systems.
+The patterns used here — parallel builders, isolated worktrees, typed mail protocol, merge pipeline — are documented in the [Agentic Engineering Book](https://github.com/jayminwest/agentic-engineering-book), a reference for designing and operating multi-agent development systems.
 
 ---
 
@@ -261,7 +261,7 @@ The patterns used here — parallel builders, isolated worktrees, typed mail pro
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OVERSTORY_DIR` | `./.overstory` | Path to Overstory state directory |
-| `PORT` | `3000` | Server listen port |
+| `PORT` | `3000` | Server listen port (set to `33020` in `.env`) |
 | `POLL_INTERVAL_MS` | `500` | SQLite poll interval in milliseconds |
 | `STATIC_DIR` | `./dist` | Directory for built client assets |
 

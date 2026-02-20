@@ -1,6 +1,6 @@
 # swarm-viz
 
-Real-time WebGL visualization of an [Overstory](https://github.com/gregslab/overstory) multi-agent swarm. Watch agents spawn, message each other, and merge work — live, at 60fps.
+Real-time WebGL visualization of an [Overstory](https://github.com/jayminwest/overstory) multi-agent swarm. Watch agents spawn, message each other, and merge work — live, at 60fps.
 
 Think: Tron meets NASA mission control. Dark background, neon accents, bloom glow.
 
@@ -28,7 +28,7 @@ Agent capabilities have distinct colors: coordinator, lead, scout, builder, revi
 Overstory SQLite DBs ──→ Bun WebSocket server ──→ Browser (Three.js canvas)
  sessions.db              server/index.ts           client/main.ts
  mail.db                  (polls every 500ms)        client/scene.ts
- merge-queue.db           port 3000                  Full-screen WebGL
+ merge-queue.db           port 33020                 Full-screen WebGL
  metrics.db (optional)
 ```
 
@@ -52,7 +52,7 @@ bun run build
 bun run dev
 ```
 
-Open `http://localhost:3000` in your browser.
+Open `http://localhost:33020` in your browser (port set via `.env`).
 
 ---
 
@@ -63,7 +63,7 @@ All configuration is via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OVERSTORY_DIR` | `./.overstory` | Path to the Overstory state directory |
-| `PORT` | `3000` | HTTP/WebSocket server port |
+| `PORT` | `3000` | HTTP/WebSocket server port (set to `33020` in `.env`) |
 | `POLL_INTERVAL_MS` | `500` | How often the server polls SQLite for changes |
 | `STATIC_DIR` | `./dist` | Directory to serve the built client from |
 
@@ -146,9 +146,9 @@ Client → server messages are not used; the visualization is read-only.
 
 ## Overstory Integration
 
-swarm-viz is a passive observer of [Overstory](https://github.com/gregslab/overstory), the multi-agent swarm coordination framework. Overstory manages agent lifecycles, task dispatch, mail routing, and merge pipelines. swarm-viz reads the same SQLite state files Overstory writes and renders them visually.
+swarm-viz is a passive observer of [Overstory](https://github.com/jayminwest/overstory), the multi-agent swarm coordination framework. Overstory manages agent lifecycles, task dispatch, mail routing, and merge pipelines. swarm-viz reads the same SQLite state files Overstory writes and renders them visually.
 
-This project itself was built by an Overstory swarm — 21 agents across multiple sessions coordinated to produce the initial implementation. The architecture reflects patterns from the [Agentic Engineering Book](https://github.com/gregslab/agentic-engineering-book): parallel builder agents working in isolated worktrees, a merge pipeline for integration, and real-time observability as a first-class concern.
+This project itself was built by an Overstory swarm — 21 agents across multiple sessions coordinated to produce the initial implementation. The architecture reflects patterns from the [Agentic Engineering Book](https://github.com/jayminwest/agentic-engineering-book): parallel builder agents working in isolated worktrees, a merge pipeline for integration, and real-time observability as a first-class concern.
 
 ---
 
