@@ -4,6 +4,8 @@ Real-time WebGL visualization of an [Overstory](https://github.com/jayminwest/ov
 
 Think: Tron meets NASA mission control. Dark background, neon accents, bloom glow.
 
+Overstory was created by Jaymin West, and you should check/try it out. Get a little crazy. Learn a Lot.
+
 ---
 
 ## What It Shows
