@@ -1,6 +1,6 @@
 # Swarm-Viz
 
-Written (appropriately) in TypeScript, swarm-viz is a eal-time WebGL visualization of an [Overstory](https://github.com/jayminwest/overstory) multi-agent swarm. Art meets tech: Watch agents spawn, message each other, and merge work — live, at 60fps. 
+Written (appropriately) in TypeScript, swarm-viz is a real-time WebGL visualization of an [Overstory](https://github.com/jayminwest/overstory) multi-agent swarm. Art meets tech: Watch agents spawn, message each other, and merge work — live, at 60fps. 
 
 Overstory was created by Jaymin West, and you really should check/try it out. Get a little crazy, burn some tokens, learn a Lot.
 
@@ -40,21 +40,29 @@ The server reads Overstory state databases in **read-only** mode and pushes incr
 
 ## Quick Start
 
-**Prerequisites:** [Bun](https://bun.sh) runtime, an active Overstory install.
+**Prerequisites:** [Bun](https://bun.sh) runtime.
 
 ```bash
 # Install dependencies
 bun install
 
-# Development (live server, reads .overstory/ in project root)
+# Demo mode (no Overstory install needed, simulated swarm data)
+bun run demo
+
+# Live mode (reads .overstory/ databases from a real swarm)
 bun run dev
 
-# Production build + serve
+# Point at a specific Overstory install
+OVERSTORY_DIR=/path/to/project/.overstory bun run dev
+
+# Production build, then serve
 bun run build
 bun run dev
 ```
 
 Open `http://localhost:33020` in your browser (port set via `.env`).
+
+Demo mode generates synthetic agent activity so you can see the visualization without running a live swarm.
 
 ---
 
@@ -66,14 +74,28 @@ All configuration is via environment variables:
 |----------|---------|-------------|
 | `OVERSTORY_DIR` | `./.overstory` | Path to the Overstory state directory |
 | `PORT` | `3000` | HTTP/WebSocket server port (set to `33020` in `.env`) |
-| `POLL_INTERVAL_MS` | `500` | How often the server polls SQLite for changes |
+| `POLL_INTERVAL_MS` | `500` | How often the server polls SQLite for changes (ms) |
 | `STATIC_DIR` | `./dist` | Directory to serve the built client from |
+| `DEMO_MODE` | `false` | Set to `true` for simulated swarm data (no databases needed) |
 
-Example pointing at a remote Overstory install:
+### npm Scripts
 
-```bash
-OVERSTORY_DIR=/Users/greg/Dev/projects/myapp/.overstory bun run dev
-```
+| Command | What it does |
+|---------|-------------|
+| `bun run dev` | Start the server in live mode (reads Overstory databases) |
+| `bun run demo` | Start the server in demo mode (simulated data) |
+| `bun run build` | Bundle the client into `dist/` for production |
+| `bun run typecheck` | TypeScript type check (no emit) |
+| `bun run lint` | Biome lint + format check on `client/` |
+| `bun test` | Run tests |
+
+### Endpoints
+
+| Path | Description |
+|------|-------------|
+| `/` | WebGL visualization (serves `dist/index.html`) |
+| `/ws` | WebSocket endpoint for real-time state updates |
+| `/health` | Health check (returns JSON with database status) |
 
 ---
 
