@@ -60,6 +60,8 @@ function updateStats(metrics: SwarmMetrics): void {
 	if (!el) return;
 	const totalTokens = metrics.totalInputTokens + metrics.totalOutputTokens + metrics.totalCacheReadTokens;
 	el.textContent = [
+		"",
+		"",
 		`agents  ${metrics.totalAgents}`,
 		`active  ${metrics.activeAgents}`,
 		`msgs    ${metrics.totalMessages}`,
@@ -113,11 +115,27 @@ function updateCostPanel(metrics: SwarmMetrics, visible: boolean): void {
 	lines.push(`$/min       $${metrics.costPerMinute.toFixed(2)}`);
 
 	el.textContent = lines.join("\n");
+
+	// After rendering, check if panel overlaps stats and shift up if needed.
+	requestAnimationFrame(() => {
+		const costRect = el.getBoundingClientRect();
+		const statsEl2 = document.getElementById("stats");
+		if (!statsEl2) return;
+		const statsTop2 = statsEl2.getBoundingClientRect().top;
+		const overlap = costRect.bottom - statsTop2 + 8;
+		if (overlap > 0) {
+			el.style.top = `calc(50% - ${overlap}px)`;
+		} else {
+			el.style.top = "50%";
+		}
+	});
 }
 
 // ---------------------------------------------------------------------------
 // Toggle controls — keyboard shortcuts L / M / G / W / C
 // ---------------------------------------------------------------------------
+// costMode cycles: 0 = both (panel + labels), 1 = labels only, 2 = panel only, 3 = off
+let costMode = 0;
 const toggles = { labels: true, msgLabels: true, clustering: true, workItems: true, costs: true };
 
 function updateToggles(): void {
@@ -129,7 +147,7 @@ function updateToggles(): void {
 		{ key: "m", label: "msgs   ", on: toggles.msgLabels },
 		{ key: "g", label: "cluster", on: toggles.clustering },
 		{ key: "w", label: "work   ", on: toggles.workItems },
-		{ key: "c", label: "costs  ", on: toggles.costs },
+		{ key: "c", label: "costs  ", on: costMode < 3 },
 	];
 
 	el.innerHTML = items.map((item) =>
@@ -182,8 +200,10 @@ function updateWorkItems(): void {
 // Cost panel — update from current snapshot metrics
 // ---------------------------------------------------------------------------
 function refreshCostPanel(): void {
-	updateCostPanel(snapshot.metrics, toggles.costs);
-	scene.setCostLabelsVisible(toggles.costs);
+	const showPanel = costMode === 0 || costMode === 2;
+	const showLabels = costMode === 0 || costMode === 1;
+	updateCostPanel(snapshot.metrics, showPanel);
+	scene.setCostLabelsVisible(showLabels);
 	scene.updateAgentCosts(snapshot.metrics.agentCosts);
 }
 
@@ -210,7 +230,7 @@ window.addEventListener("keydown", (e) => {
 			updateToggles();
 			break;
 		case "c":
-			toggles.costs = !toggles.costs;
+			costMode = (costMode + 1) % 4;
 			refreshCostPanel();
 			updateToggles();
 			break;
@@ -222,7 +242,7 @@ updateToggles();
 scene.setLabelsVisible(toggles.labels);
 scene.setMsgLabelsVisible(toggles.msgLabels);
 scene.setClusteringEnabled(toggles.clustering);
-scene.setCostLabelsVisible(toggles.costs);
+scene.setCostLabelsVisible(costMode === 0 || costMode === 1);
 
 // ---------------------------------------------------------------------------
 // Resize handler — recalculate dynamic panels
