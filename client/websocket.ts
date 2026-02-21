@@ -26,9 +26,15 @@ export function createWebSocket(
 		ws.addEventListener("message", (evt) => {
 			try {
 				const msg = JSON.parse(evt.data as string) as ServerMessage;
+				if (msg.type === "update") {
+					const u = (msg as any).data;
+					if (u?.type === "tool_event") {
+						console.log("[ws] tool_event received:", JSON.stringify(u.data));
+					}
+				}
 				onMessage(msg);
-			} catch {
-				// ignore malformed messages
+			} catch (err) {
+				console.error("[ws] parse error:", err);
 			}
 		});
 

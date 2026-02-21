@@ -20,6 +20,25 @@ import type {
 // Internal types
 // ---------------------------------------------------------------------------
 
+interface MoonState {
+	mesh: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
+	/** Angle in the orbital plane, 0..2pi */
+	angle: number;
+	/** Angular speed in radians/second */
+	speed: number;
+	/** Orbital radius (world units) */
+	orbitRadius: number;
+	/** Tilt of orbital plane around X axis (radians) */
+	tiltX: number;
+	/** Tilt of orbital plane around Z axis (radians) */
+	tiltZ: number;
+	/** "absorb" animation: t goes 0->1, moon shrinks into orb */
+	absorbT: number;
+	absorbing: boolean;
+	/** Starting position when absorption begins (for lerp to orb center) */
+	absorbStart: THREE.Vector3;
+}
+
 interface NodeState {
 	mesh: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
 	/** Soft-body layout position used by the force simulation */
@@ -39,6 +58,8 @@ interface NodeState {
 	fadeT: number;
 	completing: boolean;
 	label: CSS2DObject;
+	/** Orbiting moons; only present when state === 'working' */
+	moons: MoonState[];
 }
 
 interface EdgeState {
@@ -63,12 +84,44 @@ interface DiamondState {
 }
 
 // ---------------------------------------------------------------------------
+// Activity particle system
+// ---------------------------------------------------------------------------
+
+interface ActivityParticle {
+	mesh: THREE.Mesh<THREE.SphereGeometry, THREE.MeshBasicMaterial>;
+	velocity: THREE.Vector3;
+	/** remaining life in seconds */
+	life: number;
+	/** total life for fade calculation */
+	maxLife: number;
+}
+
+const TOOL_COLORS: Record<string, number> = {
+	Read:    0xff4466,  // hot pink — intake
+	Edit:    0xff2222,  // red — creation
+	Write:   0xff2222,  // red — creation
+	Bash:    0xff6633,  // hot orange — execution
+	Grep:    0xff44aa,  // magenta — search
+	Glob:    0xff44aa,  // magenta — search
+	Task:    0xffaa22,  // amber — delegation
+};
+
+function toolColor(toolName: string | null): number {
+	if (!toolName) return 0xff5555;
+	for (const [key, color] of Object.entries(TOOL_COLORS)) {
+		if (toolName.startsWith(key)) return color;
+	}
+	return 0xff5555;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 export interface SceneController {
 	applySnapshot(snapshot: StateSnapshot): void;
 	addMessage(msg: AgentMessage): void;
+	emitActivityParticle(agentName: string, toolName: string | null): void;
 	setLabelsVisible(visible: boolean): void;
 	setMsgLabelsVisible(visible: boolean): void;
 	setClusteringEnabled(enabled: boolean): void;
@@ -226,8 +279,8 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 
 	const bloomPass = new UnrealBloomPass(
 		new THREE.Vector2(window.innerWidth, window.innerHeight),
-		0.8, // strength
-		0.4, // radius
+		0.6, // strength
+		0.7, // radius
 		0.3, // threshold — most emissive colours will bloom
 	);
 	composer.addPass(bloomPass);
@@ -246,6 +299,9 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 
 	// Track agents that have fully faded out to prevent re-adding from stale snapshots
 	const completedRemoved = new Set<string>();
+
+	// Activity particles emitted on tool events
+	const particles: ActivityParticle[] = [];
 
 	// -------------------------------------------------------------------------
 	// Toggle state (all off by default)
@@ -301,7 +357,7 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 		mesh.add(label);
 		scene.add(mesh);
 
-		nodes.set(agent.name, {
+		const nodeState: NodeState = {
 			mesh,
 			lx: mesh.position.x,
 			ly: mesh.position.y,
@@ -316,7 +372,14 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			fadeT: 0,
 			completing: false,
 			label,
-		});
+			moons: [],
+		};
+		nodes.set(agent.name, nodeState);
+
+		// Spawn moons immediately if agent starts in working state
+		if (agent.state === "working") {
+			spawnMoons(nodeState, radius);
+		}
 	}
 
 	function updateNode(agent: Agent): void {
@@ -331,6 +394,8 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			addNode(agent);
 			return;
 		}
+
+		const prevState = node.state;
 		node.state = agent.state;
 		node.parentAgent = agent.parentAgent;
 		node.beadId = agent.beadId;
@@ -339,11 +404,25 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 		);
 		node.label.element.textContent = agent.name;
 
+		// Moon lifecycle based on state transitions
+		if (agent.state === "working" && prevState !== "working") {
+			// Agent entered working state — spawn moons
+			const radius = node.mesh.geometry.parameters.radius;
+			spawnMoons(node, radius);
+		} else if (prevState === "working" && agent.state !== "working") {
+			// Agent left working state — absorb moons into orb
+			removeMoons(node, /* absorb= */ true);
+		}
+
 		// Trigger completion fadeout
 		if (agent.state === "completed" && !node.completing) {
 			node.completing = true;
 			node.fadeT = 0;
 			node.label.visible = false; // hide label as orb fades out
+			// Absorb moons before orb fades (if not already absorbing)
+			if (node.moons.length > 0) {
+				removeMoons(node, /* absorb= */ true);
+			}
 		}
 	}
 
@@ -352,6 +431,8 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 		if (!node) return;
 		node.label.removeFromParent();
 		node.label.element.remove();
+		// Immediately dispose any remaining moons (no animation needed at hard removal)
+		removeMoons(node, /* absorb= */ false);
 		scene.remove(node.mesh);
 		node.mesh.geometry.dispose();
 		node.mesh.material.dispose();
@@ -605,6 +686,147 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	}
 
 	// -------------------------------------------------------------------------
+	// Orbiting moons
+	// -------------------------------------------------------------------------
+
+	// Moon count is determined per-agent (1 moon per working agent)
+
+	function moonColor(agentColor: THREE.Color): THREE.Color {
+		// Slightly shifted hue and brighter, to complement the orb
+		const hsl = { h: 0, s: 0, l: 0 };
+		agentColor.getHSL(hsl);
+		return new THREE.Color().setHSL(
+			(hsl.h + 0.08) % 1,
+			Math.min(1, hsl.s * 0.9),
+			Math.min(1, hsl.l * 1.4),
+		);
+	}
+
+	function spawnMoons(node: NodeState, orbRadius: number): void {
+		// Already has moons
+		if (node.moons.length > 0) return;
+
+		const baseColor = node.mesh.material.color;
+		const mColor = moonColor(baseColor);
+		const moonRadius = orbRadius * 0.18; // ~18% of orb size
+		const orbitRadius = orbRadius * 1.8; // orbit at 1.8x orb radius
+
+		// 1 moon per working agent
+		const geo = new THREE.SphereGeometry(moonRadius, 10, 8);
+		const mat = new THREE.MeshBasicMaterial({
+			color: mColor,
+			transparent: true,
+			opacity: 0.85,
+		});
+		const mesh = new THREE.Mesh(geo, mat);
+		// Start at scale 0, will grow in via absorption-reverse logic in animateMoons
+		mesh.scale.setScalar(0);
+		scene.add(mesh);
+
+		// Base orbit is in XZ plane (edge-on to camera looking down Z).
+		// tiltX: small tilt around X so the orbit isn't perfectly flat edge-on
+		// (~15-20 deg = 0.26-0.35 rad) so depth effect is visible.
+		// tiltZ: small random skew around Z for variety between agents.
+		node.moons.push({
+			mesh,
+			angle: Math.random() * Math.PI * 2,
+			speed: 1.4 + Math.random() * 0.6, // ~1.4-2.0 rad/s
+			orbitRadius,
+			tiltX: 0.26 + Math.random() * 0.18, // 15-25 deg off edge-on
+			tiltZ: (Math.random() - 0.5) * 0.3,  // small Z skew for variety
+			absorbT: 0,
+			absorbing: false,
+			absorbStart: new THREE.Vector3(),
+		});
+	}
+
+	function removeMoons(node: NodeState, absorb = false): void {
+		if (node.moons.length === 0) return;
+		if (absorb) {
+			// Trigger absorption animation; actual disposal happens in animateMoons
+			for (const moon of node.moons) {
+				if (!moon.absorbing) {
+					moon.absorbing = true;
+					moon.absorbT = 0;
+					moon.absorbStart.copy(moon.mesh.position);
+				}
+			}
+		} else {
+			// Immediate removal
+			for (const moon of node.moons) {
+				scene.remove(moon.mesh);
+				moon.mesh.geometry.dispose();
+				moon.mesh.material.dispose();
+			}
+			node.moons = [];
+		}
+	}
+
+	function animateMoons(dt: number, t: number): void {
+		for (const node of nodes.values()) {
+			if (node.moons.length === 0) continue;
+
+			const orbPos = node.mesh.position;
+			const toRemove: MoonState[] = [];
+
+			for (const moon of node.moons) {
+				if (moon.absorbing) {
+					// Absorption: fly toward orb center and shrink
+					moon.absorbT = Math.min(1, moon.absorbT + dt / 0.4);
+					const eased = moon.absorbT * moon.absorbT; // ease-in
+					moon.mesh.position.lerpVectors(moon.absorbStart, orbPos, eased);
+					moon.mesh.scale.setScalar(1 - eased);
+					if (moon.absorbT >= 1) {
+						toRemove.push(moon);
+					}
+					continue;
+				}
+
+				// Grow in during first 0.3s
+				if (moon.mesh.scale.x < 1) {
+					const grow = Math.min(1, moon.mesh.scale.x + dt / 0.3);
+					moon.mesh.scale.setScalar(grow);
+				}
+
+				// Advance orbit angle
+				moon.angle += moon.speed * dt;
+
+				// Compute position in tilted orbital plane.
+				// Base orbit in XZ plane (edge-on to camera looking down -Z):
+				//   x0 = cos(angle) * r  (left-right)
+				//   z0 = sin(angle) * r  (depth, into/out of screen)
+				//   y0 = 0               (no vertical component before tilt)
+				const x0 = Math.cos(moon.angle) * moon.orbitRadius;
+				const z0 = Math.sin(moon.angle) * moon.orbitRadius;
+
+				// Apply tiltX (rotation around X axis) to introduce vertical component:
+				// y' = -z*sin(tiltX),  z' = z*cos(tiltX)
+				const y1 = -z0 * Math.sin(moon.tiltX);
+				const z1 =  z0 * Math.cos(moon.tiltX);
+
+				// Apply tiltZ (rotation around Z axis) for per-agent skew variety:
+				// x'' = x*cos - y*sin,  y'' = x*sin + y*cos
+				const x2 = x0 * Math.cos(moon.tiltZ) - y1 * Math.sin(moon.tiltZ);
+				const y2 = x0 * Math.sin(moon.tiltZ) + y1 * Math.cos(moon.tiltZ);
+
+				moon.mesh.position.set(orbPos.x + x2, orbPos.y + y2, orbPos.z + z1);
+
+				// Subtle brightness pulse synced to orbit
+				const pulseFactor = 0.75 + 0.25 * Math.sin(t * 3.5 + moon.angle);
+				moon.mesh.material.opacity = 0.7 + 0.15 * pulseFactor;
+			}
+
+			// Dispose absorbed moons
+			for (const moon of toRemove) {
+				scene.remove(moon.mesh);
+				moon.mesh.geometry.dispose();
+				moon.mesh.material.dispose();
+				node.moons = node.moons.filter((m) => m !== moon);
+			}
+		}
+	}
+
+	// -------------------------------------------------------------------------
 	// Message flight (particle arc)
 	// -------------------------------------------------------------------------
 	function startFlight(msg: AgentMessage): void {
@@ -702,6 +924,111 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	}
 
 	// -------------------------------------------------------------------------
+	// Activity particle management
+	// -------------------------------------------------------------------------
+	function emitActivityParticle(agentName: string, toolName: string | null, mailRecipient?: string): void {
+		const node = nodes.get(agentName);
+		if (!node) {
+			console.log(`[particle] no node for "${agentName}", known nodes: ${[...nodes.keys()].join(", ")}`);
+			return;
+		}
+		console.log(`[particle] spawning at ${node.mesh.position.x.toFixed(1)},${node.mesh.position.y.toFixed(1)} color=${toolColor(toolName).toString(16)}`);
+
+		const isMailSent = mailRecipient !== undefined;
+		const color = isMailSent ? 0xffffff : toolColor(toolName);
+		const burstCount = isMailSent ? 4 : 2 + Math.floor(Math.random() * 2); // 2-3 per tool, 4 for mail
+
+		for (let b = 0; b < burstCount; b++) {
+			const radius = isMailSent
+				? 0.08 + Math.random() * 0.04
+				: 0.03 + Math.random() * 0.025;
+			const maxLife = 2.0 + Math.random() * 1.5;
+
+			const geo = new THREE.SphereGeometry(radius, 6, 4);
+			const mat = new THREE.MeshBasicMaterial({
+				color,
+				transparent: true,
+				opacity: 0.95,
+				depthTest: false,
+			});
+			const mesh = new THREE.Mesh(geo, mat);
+			mesh.renderOrder = 999;
+			mesh.position.copy(node.mesh.position);
+			mesh.position.z += 1;
+			scene.add(mesh);
+
+			let velocity: THREE.Vector3;
+			if (isMailSent && mailRecipient) {
+				const recipientNode = nodes.get(mailRecipient);
+				if (recipientNode) {
+					const dir = new THREE.Vector3()
+						.subVectors(recipientNode.mesh.position, node.mesh.position)
+						.normalize();
+					const spread = 0.4;
+					dir.x += (Math.random() - 0.5) * spread;
+					dir.y += (Math.random() - 0.5) * spread;
+					dir.normalize();
+					velocity = dir.multiplyScalar(0.6 + Math.random() * 0.4);
+				} else {
+					velocity = new THREE.Vector3(
+						(Math.random() - 0.5) * 2,
+						(Math.random() - 0.5) * 2,
+						0,
+					).normalize().multiplyScalar(0.6 + Math.random() * 0.4);
+				}
+			} else {
+				const angle = Math.random() * Math.PI * 2;
+				const speed = 1.2 + Math.random() * 1.5;
+				velocity = new THREE.Vector3(
+					Math.cos(angle) * speed,
+					Math.sin(angle) * speed,
+					0,
+				);
+			}
+
+			particles.push({ mesh, velocity, life: maxLife, maxLife });
+		}
+	}
+
+	function animateParticles(dt: number): void {
+		const toRemove: number[] = [];
+
+		for (let i = 0; i < particles.length; i++) {
+			const p = particles[i]!;
+
+			// Advance position
+			p.mesh.position.x += p.velocity.x * dt;
+			p.mesh.position.y += p.velocity.y * dt;
+			p.mesh.position.z += p.velocity.z * dt;
+
+			// Drag — gentle slowdown
+			p.velocity.multiplyScalar(0.995);
+
+			// Reduce life
+			p.life -= dt;
+
+			// Shrink and fade — keeps bloom glow intact longer
+			const lifeRatio = Math.max(0, p.life / p.maxLife);
+			p.mesh.scale.setScalar(lifeRatio);
+			p.mesh.material.opacity = 0.5 + lifeRatio * 0.45;
+
+			if (p.life <= 0) {
+				toRemove.push(i);
+			}
+		}
+
+		// Remove expired particles (reverse order to preserve indices)
+		for (let i = toRemove.length - 1; i >= 0; i--) {
+			const idx = toRemove[i]!;
+			const p = particles[idx]!;
+			scene.remove(p.mesh);
+			p.mesh.geometry.dispose();
+			p.mesh.material.dispose();
+			particles.splice(idx, 1);
+		}
+	}
+
+	// -------------------------------------------------------------------------
 	// Animation loop
 	// -------------------------------------------------------------------------
 	let animId = 0;
@@ -719,6 +1046,8 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			animateSpawn(dt);
 			animateCompletions(dt);
 			animatePulse(ms / 1000);
+			animateMoons(dt, ms / 1000);
+			animateParticles(dt);
 		}
 
 		composer.render();
@@ -779,6 +1108,10 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			startFlight(msg);
 		},
 
+		emitActivityParticle(agentName: string, toolName: string | null): void {
+			emitActivityParticle(agentName, toolName);
+		},
+
 		setLabelsVisible(visible: boolean): void {
 			labelsVisible = visible;
 			for (const node of nodes.values()) {
@@ -797,9 +1130,13 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			clusteringEnabled = enabled;
 			// Refresh all node colors to apply/remove cluster tint
 			for (const node of nodes.values()) {
-				node.mesh.material.color.set(
-					effectiveNodeColor(node.state, node.beadId, enabled),
-				);
+				const newColor = effectiveNodeColor(node.state, node.beadId, enabled);
+				node.mesh.material.color.set(newColor);
+				// Refresh moon colors to match updated orb color
+				const newMoonColor = moonColor(newColor);
+				for (const moon of node.moons) {
+					moon.mesh.material.color.set(newMoonColor);
+				}
 			}
 		},
 
@@ -807,6 +1144,15 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 			cancelAnimationFrame(animId);
 			window.removeEventListener("resize", onResize);
 
+			// Remove all activity particles
+			for (const p of particles) {
+				scene.remove(p.mesh);
+				p.mesh.geometry.dispose();
+				p.mesh.material.dispose();
+			}
+			particles.length = 0;
+
+			// removeNode already calls removeMoons(false) for immediate cleanup
 			for (const name of [...nodes.keys()]) removeNode(name);
 
 			for (const e of edges.values()) {

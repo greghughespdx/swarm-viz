@@ -43,7 +43,7 @@
         font-family: 'SF Mono', 'Fira Mono', 'Cascadia Code', monospace;
         font-size: 10px;
         letter-spacing: 0.04em;
-        color: rgba(60, 120, 200, 0.45);
+        color: rgba(80, 140, 220, 0.5);
         line-height: 1.7;
         white-space: pre;
       }
@@ -59,6 +59,19 @@
         line-height: 1.7;
         white-space: pre;
         text-align: right;
+      }
+
+      #work-items {
+        position: absolute;
+        top: 14px;
+        left: 18px;
+        font-family: 'SF Mono', 'Fira Mono', 'Cascadia Code', monospace;
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        color: rgba(0, 200, 160, 0.55);
+        line-height: 1.7;
+        white-space: pre;
+        display: none;
       }
 
       #health-bar {
@@ -101,11 +114,64 @@
         transform: translateX(-50%);
         user-select: none;
       }
+
+      /* ── Dashboard overlay ────────────────────────────────────────────── */
+
+      #dashboard-overlay {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        z-index: 3;
+      }
+
+      /* Mode banner — top-center, shown briefly on transitions */
+      #mode-banner {
+        position: absolute;
+        top: 0;
+        left: 50%;
+        transform: translateX(-50%) translateY(-100%);
+        font-family: 'SF Mono', 'Fira Mono', 'Cascadia Code', monospace;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        padding: 6px 18px;
+        border-bottom-left-radius: 6px;
+        border-bottom-right-radius: 6px;
+        opacity: 0;
+        transition: transform 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+                    opacity 0.4s ease;
+        white-space: nowrap;
+      }
+
+      #mode-banner.visible {
+        transform: translateX(-50%) translateY(0);
+        opacity: 1;
+      }
+
+      #mode-banner.banner-live {
+        color: rgba(0, 255, 180, 0.95);
+        background: rgba(0, 40, 30, 0.85);
+        border: 1px solid rgba(0, 200, 140, 0.3);
+        text-shadow: 0 0 12px rgba(0, 255, 180, 0.5);
+      }
+
+      #mode-banner.banner-demo {
+        color: rgba(120, 160, 255, 0.9);
+        background: rgba(10, 15, 40, 0.85);
+        border: 1px solid rgba(80, 120, 220, 0.3);
+        text-shadow: 0 0 10px rgba(100, 140, 255, 0.4);
+      }
+
+      /* Live-project status indicator */
+      #status.live-project {
+        color: rgba(0, 220, 160, 0.85);
+      }
     </style>
   </head>
   <body>
     <div id="hud">
       <div id="status">⬤ connecting</div>
+      <div id="work-items"></div>
       <div id="toggles"></div>
       <div id="stats"></div>
       <div id="health-bar">

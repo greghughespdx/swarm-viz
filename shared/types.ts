@@ -179,14 +179,50 @@ export interface StateSnapshot {
   metrics: SwarmMetrics;
 }
 
+/** A tool event emitted when an agent calls a tool */
+export interface ToolEventData {
+  agentName: string;
+  toolName: string | null;
+  eventType: string;
+  createdAt: string;
+}
+
 /** Incremental update sent when a single entity changes */
 export type StateUpdate =
   | { type: 'agent_update'; data: Agent }
   | { type: 'message_event'; data: AgentMessage }
   | { type: 'merge_update'; data: MergeQueueEntry }
-  | { type: 'metrics_update'; data: SwarmMetrics };
+  | { type: 'metrics_update'; data: SwarmMetrics }
+  | { type: 'tool_event'; data: ToolEventData };
+
+/** A discovered project with an active .overstory/ directory */
+export interface DiscoveredProject {
+  /** Human-readable project name (directory basename) */
+  name: string;
+  /** Absolute path to the project root */
+  path: string;
+  /** Absolute path to the .overstory/ directory */
+  overstoryDir: string;
+  /** Whether this project is the currently active data source */
+  active: boolean;
+  /** Number of active agents (0 if not currently connected) */
+  activeAgents: number;
+}
+
+/** Dashboard mode sent to clients */
+export type DashboardMode = 'live' | 'demo';
+
+/** Dashboard state update sent on connect and when mode changes */
+export interface DashboardState {
+  mode: DashboardMode;
+  /** The active project name when mode='live', null when mode='demo' */
+  activeProject: string | null;
+  /** All discovered projects */
+  projects: DiscoveredProject[];
+}
 
 /** WebSocket protocol message (server → client) */
 export type ServerMessage =
   | { type: 'snapshot'; data: StateSnapshot }
-  | { type: 'update'; data: StateUpdate };
+  | { type: 'update'; data: StateUpdate }
+  | { type: 'dashboard_state'; data: DashboardState };
