@@ -1,6 +1,6 @@
-# Swarm-Viz
+![swarm-viz for Overstory](docs/images/header.png)
 
-Written (appropriately) in TypeScript, swarm-viz is a real-time WebGL visualization of an [Overstory](https://github.com/jayminwest/overstory) multi-agent swarm. Art meets tech: Watch agents spawn, message each other, and merge work — live, at 60fps. 
+Written (appropriately) in TypeScript, swarm-viz is a real-time WebGL visualization of an [Overstory](https://github.com/jayminwest/overstory) multi-agent swarm. Art meets tech: Watch agents spawn, message each other, and merge work, live, at 60fps. 
 
 Overstory was created by Jaymin West, and you really should check/try it out. Get a little crazy, burn some tokens, learn a Lot.
 
