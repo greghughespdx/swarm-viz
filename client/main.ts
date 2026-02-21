@@ -1,4 +1,4 @@
-import type { DashboardState, StateSnapshot, SwarmMetrics } from "../shared/types.js";
+import type { AgentCostEntry, DashboardState, StateSnapshot, SwarmMetrics } from "../shared/types.js";
 import { createScene } from "./scene.js";
 import { createWebSocket } from "./websocket.js";
 import { createDashboard } from "./dashboard.js";
@@ -31,6 +31,11 @@ let snapshot: StateSnapshot = {
 		activeAgents: 0,
 		totalMessages: 0,
 		totalCost: 0,
+		totalInputTokens: 0,
+		totalOutputTokens: 0,
+		totalCacheReadTokens: 0,
+		costPerMinute: 0,
+		agentCosts: [],
 	},
 };
 
@@ -44,32 +49,103 @@ function setStatus(connected: boolean): void {
 	el.className = connected ? "" : "disconnected";
 }
 
+function formatTokens(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+	return String(n);
+}
+
 function updateStats(metrics: SwarmMetrics): void {
 	const el = document.getElementById("stats");
 	if (!el) return;
+	const totalTokens = metrics.totalInputTokens + metrics.totalOutputTokens + metrics.totalCacheReadTokens;
 	el.textContent = [
 		`agents  ${metrics.totalAgents}`,
 		`active  ${metrics.activeAgents}`,
 		`msgs    ${metrics.totalMessages}`,
+		`tokens  ${formatTokens(totalTokens)}`,
+		`$/min   $${metrics.costPerMinute.toFixed(2)}`,
 		`cost    $${metrics.totalCost.toFixed(4)}`,
 	].join("\n");
 }
 
+function updateCostPanel(metrics: SwarmMetrics, visible: boolean): void {
+	const el = document.getElementById("cost-panel");
+	if (!el) return;
+
+	if (!visible) {
+		el.style.display = "none";
+		return;
+	}
+
+	el.style.display = "block";
+
+	if (metrics.agentCosts.length === 0) {
+		el.textContent = "cost breakdown\n(no data)";
+		return;
+	}
+
+	// Dynamic row count: measure actual available space between work-items and stats panels.
+	const lineHeightPx = 12; // ~9px font * 1.3 line-height
+	const workEl = document.getElementById("work-items");
+	const statsEl = document.getElementById("stats");
+	const workBottom = workEl && workEl.style.display !== "none" ? workEl.getBoundingClientRect().bottom : 40;
+	const statsTop = statsEl ? statsEl.getBoundingClientRect().top : window.innerHeight - 20;
+	const availableHeight = statsTop - workBottom - 24; // 24px padding
+	const summaryLines = 4; // total, tokens, $/min, header
+	const maxRows = Math.max(3, Math.floor(availableHeight / lineHeightPx) - summaryLines);
+	const lines = ["cost breakdown"];
+	const shownCosts = metrics.agentCosts.slice(0, maxRows);
+	const hidden = metrics.agentCosts.length - maxRows;
+	for (const entry of shownCosts) {
+		const name = entry.agentName.length > 18 ? entry.agentName.slice(0, 18) : entry.agentName;
+		const cost = `$${entry.costUsd.toFixed(2)}`;
+		const model = entry.modelUsed || '?';
+		lines.push(`${name.padEnd(18)}  ${cost.padStart(7)}  ${model}`);
+	}
+	if (hidden > 0) {
+		lines.push(`  ... +${hidden} more`);
+	}
+	lines.push(`${"total".padEnd(18)}  $${metrics.totalCost.toFixed(2).padStart(6)}`);
+	const totalIn = metrics.totalInputTokens + metrics.totalCacheReadTokens;
+	const totalOut = metrics.totalOutputTokens;
+	lines.push(`tokens in:  ${formatTokens(totalIn).padStart(6)}  out: ${formatTokens(totalOut)}`);
+	lines.push(`$/min       $${metrics.costPerMinute.toFixed(2)}`);
+
+	el.textContent = lines.join("\n");
+}
+
 // ---------------------------------------------------------------------------
-// Toggle controls — keyboard shortcuts L / M / G / W
+// Toggle controls — keyboard shortcuts L / M / G / W / C
 // ---------------------------------------------------------------------------
-const toggles = { labels: true, msgLabels: true, clustering: true, workItems: true };
+const toggles = { labels: true, msgLabels: true, clustering: true, workItems: true, costs: true };
 
 function updateToggles(): void {
 	const el = document.getElementById("toggles");
 	if (!el) return;
-	el.textContent = [
-		`[L] labels  ${toggles.labels ? "●" : "○"}`,
-		`[M] msgs    ${toggles.msgLabels ? "●" : "○"}`,
-		`[G] cluster ${toggles.clustering ? "●" : "○"}`,
-		`[W] work    ${toggles.workItems ? "●" : "○"}`,
-	].join("\n");
+
+	const items = [
+		{ key: "l", label: "labels ", on: toggles.labels },
+		{ key: "m", label: "msgs   ", on: toggles.msgLabels },
+		{ key: "g", label: "cluster", on: toggles.clustering },
+		{ key: "w", label: "work   ", on: toggles.workItems },
+		{ key: "c", label: "costs  ", on: toggles.costs },
+	];
+
+	el.innerHTML = items.map((item) =>
+		`<span class="toggle-row" data-key="${item.key}">[${item.key.toUpperCase()}] ${item.label} ${item.on ? "●" : "○"}</span>`
+	).join("\n");
 }
+
+// Click handler for toggles
+document.getElementById("toggles")?.addEventListener("click", (e) => {
+	const row = (e.target as HTMLElement).closest(".toggle-row");
+	if (!row) return;
+	const key = row.getAttribute("data-key");
+	if (key) {
+		window.dispatchEvent(new KeyboardEvent("keydown", { key }));
+	}
+});
 
 // ---------------------------------------------------------------------------
 // Work items HUD — upper-left panel showing agent name + current bead
@@ -102,6 +178,15 @@ function updateWorkItems(): void {
 	el.textContent = lines.join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// Cost panel — update from current snapshot metrics
+// ---------------------------------------------------------------------------
+function refreshCostPanel(): void {
+	updateCostPanel(snapshot.metrics, toggles.costs);
+	scene.setCostLabelsVisible(toggles.costs);
+	scene.updateAgentCosts(snapshot.metrics.agentCosts);
+}
+
 window.addEventListener("keydown", (e) => {
 	switch (e.key.toLowerCase()) {
 		case "l":
@@ -124,6 +209,11 @@ window.addEventListener("keydown", (e) => {
 			updateWorkItems();
 			updateToggles();
 			break;
+		case "c":
+			toggles.costs = !toggles.costs;
+			refreshCostPanel();
+			updateToggles();
+			break;
 	}
 });
 
@@ -132,6 +222,14 @@ updateToggles();
 scene.setLabelsVisible(toggles.labels);
 scene.setMsgLabelsVisible(toggles.msgLabels);
 scene.setClusteringEnabled(toggles.clustering);
+scene.setCostLabelsVisible(toggles.costs);
+
+// ---------------------------------------------------------------------------
+// Resize handler — recalculate dynamic panels
+// ---------------------------------------------------------------------------
+window.addEventListener("resize", () => {
+	refreshCostPanel();
+});
 
 // ---------------------------------------------------------------------------
 // WebSocket URL: same host as the page, /ws path (server handles port)
@@ -149,6 +247,7 @@ createWebSocket(
 			scene.applySnapshot(snapshot);
 			updateStats(snapshot.metrics);
 			updateWorkItems();
+			refreshCostPanel();
 			return;
 		}
 
@@ -164,7 +263,17 @@ createWebSocket(
 					agents: [],
 					messages: [],
 					mergeQueue: [],
-					metrics: { totalAgents: 0, activeAgents: 0, totalMessages: 0, totalCost: 0 },
+					metrics: {
+						totalAgents: 0,
+						activeAgents: 0,
+						totalMessages: 0,
+						totalCost: 0,
+						totalInputTokens: 0,
+						totalOutputTokens: 0,
+						totalCacheReadTokens: 0,
+						costPerMinute: 0,
+						agentCosts: [],
+					},
 				});
 			}
 			return;
@@ -210,6 +319,7 @@ createWebSocket(
 				case "metrics_update": {
 					snapshot.metrics = update.data;
 					updateStats(snapshot.metrics);
+					refreshCostPanel();
 					break;
 				}
 

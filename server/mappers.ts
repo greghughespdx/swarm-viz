@@ -5,6 +5,7 @@
 import type {
   Agent,
   AgentCapability,
+  AgentCostEntry,
   AgentMessage,
   AgentSession,
   AgentState,
@@ -261,23 +262,63 @@ export function toVizMergeEntry(e: DbMergeQueueEntry): MergeQueueEntry {
   };
 }
 
+function modelShorthand(model: string | null): string {
+  if (!model) return '';
+  const m = model.toLowerCase();
+  if (m.includes('opus')) return 'opus';
+  if (m.includes('sonnet')) return 'sonnet';
+  if (m.includes('haiku')) return 'haiku';
+  if (m.includes('gpt-4')) return 'gpt-4';
+  if (m.includes('gpt-3')) return 'gpt-3';
+  // Return first 8 chars as fallback
+  return model.slice(0, 8);
+}
+
 /** Compute SwarmMetrics from current DB state */
 export function computeMetrics(
   sessions: AgentSession[],
   totalMessages: number,
   metricsSessions: MetricsSession[],
+  costPerMinute = 0,
 ): SwarmMetrics {
   const activeAgents = sessions.filter(
     (s) => s.state === 'working' || s.state === 'booting',
   ).length;
-  const totalCost = metricsSessions.reduce(
-    (sum, s) => sum + (s.estimatedCostUsd ?? 0),
-    0,
-  );
+
+  // Aggregate per-agent costs from metrics sessions (last entry per agent wins)
+  const agentCostMap = new Map<string, AgentCostEntry>();
+  for (const s of metricsSessions) {
+    const existing = agentCostMap.get(s.agentName);
+    const entry: AgentCostEntry = {
+      agentName: s.agentName,
+      capability: s.capability,
+      modelUsed: modelShorthand(s.modelUsed),
+      costUsd: (existing?.costUsd ?? 0) + (s.estimatedCostUsd ?? 0),
+      inputTokens: (existing?.inputTokens ?? 0) + s.inputTokens,
+      outputTokens: (existing?.outputTokens ?? 0) + s.outputTokens,
+      cacheReadTokens: (existing?.cacheReadTokens ?? 0) + s.cacheReadTokens,
+    };
+    // Use most recent model for this agent
+    if (s.modelUsed) entry.modelUsed = modelShorthand(s.modelUsed);
+    agentCostMap.set(s.agentName, entry);
+  }
+
+  const agentCosts = [...agentCostMap.values()].sort((a, b) => b.costUsd - a.costUsd);
+
+  const totalCost = agentCosts.reduce((sum, e) => sum + e.costUsd, 0);
+  const totalInputTokens = agentCosts.reduce((sum, e) => sum + e.inputTokens, 0);
+  const totalOutputTokens = agentCosts.reduce((sum, e) => sum + e.outputTokens, 0);
+  const totalCacheReadTokens = agentCosts.reduce((sum, e) => sum + e.cacheReadTokens, 0);
+
   return {
     totalAgents: sessions.length,
     activeAgents,
     totalMessages,
     totalCost,
+    totalInputTokens,
+    totalOutputTokens,
+    totalCacheReadTokens,
+    costPerMinute,
+    agentCosts,
   };
 }

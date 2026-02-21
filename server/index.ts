@@ -44,7 +44,7 @@ import { DiscoveryManager } from "./discovery.ts";
 const OVERSTORY_DIR_OVERRIDE = process.env["OVERSTORY_DIR"];
 const PORT = parseInt(process.env["PORT"] ?? "3000", 10);
 const POLL_INTERVAL_MS = parseInt(process.env["POLL_INTERVAL_MS"] ?? "500", 10);
-const STATIC_DIR = process.env["STATIC_DIR"] ?? join(import.meta.dir, "../dist");
+const STATIC_DIR = process.env["STATIC_DIR"] ?? join(import.meta.dir, "..");
 const MAX_RECENT_MESSAGES = 50;
 
 /**
@@ -464,12 +464,14 @@ function buildSnapshot(): StateSnapshot {
   const mergeQueue = modeManager.queryMergeQueue();
   const metricsSessions = modeManager.queryMetricsSessions();
   const totalMessages = modeManager.queryMessageCount();
+  const metrics = computeMetrics(sessions, totalMessages, metricsSessions, smoothedCostPerMinute);
+  recordCostSample(metrics.totalCost);
 
   return {
     agents: sessions.map(toAgent),
     messages: messages.map(toAgentMessage),
     mergeQueue: mergeQueue.map(toVizMergeEntry),
-    metrics: computeMetrics(sessions, totalMessages, metricsSessions),
+    metrics,
   };
 }
 
@@ -492,8 +494,39 @@ interface ClientState {
   lastEventId: number;
 }
 
+// ── Cost-per-minute tracking ──────────────────────────────────────────────────
+// Smooth cost rate over a 30-second window using a rolling sample buffer.
+
+interface CostSample {
+  cost: number;
+  ts: number; // Date.now() in ms
+}
+
+const COST_WINDOW_MS = 30_000;
+const costSamples: CostSample[] = [];
+let smoothedCostPerMinute = 0;
+
+function recordCostSample(totalCost: number): void {
+  const now = Date.now();
+  costSamples.push({ cost: totalCost, ts: now });
+  // Drop samples older than the window
+  while (costSamples.length > 1 && now - costSamples[0]!.ts > COST_WINDOW_MS) {
+    costSamples.shift();
+  }
+  // Need at least 2 samples to compute a rate
+  if (costSamples.length >= 2) {
+    const oldest = costSamples[0]!;
+    const newest = costSamples[costSamples.length - 1]!;
+    const deltaMs = newest.ts - oldest.ts;
+    const deltaCost = newest.cost - oldest.cost;
+    if (deltaMs > 0 && deltaCost >= 0) {
+      smoothedCostPerMinute = (deltaCost / deltaMs) * 60_000;
+    }
+  }
+}
+
 function metricsKey(m: SwarmMetrics): string {
-  return `${m.totalAgents}:${m.activeAgents}:${m.totalMessages}:${m.totalCost.toFixed(6)}`;
+  return `${m.totalAgents}:${m.activeAgents}:${m.totalMessages}:${m.totalCost.toFixed(6)}:${m.costPerMinute.toFixed(4)}`;
 }
 
 function agentKey(a: Agent): string {
@@ -586,7 +619,8 @@ function computeUpdates(state: ClientState): StateUpdate[] {
   // Metrics update (check if anything changed)
   const totalMessages = modeManager.queryMessageCount();
   const metricsSessions = modeManager.queryMetricsSessions();
-  const currentMetrics = computeMetrics(sessions, totalMessages, metricsSessions);
+  const currentMetrics = computeMetrics(sessions, totalMessages, metricsSessions, smoothedCostPerMinute);
+  recordCostSample(currentMetrics.totalCost);
   const currentKey = metricsKey(currentMetrics);
   if (currentKey !== state.metricsKey) {
     updates.push({ type: "metrics_update", data: currentMetrics });

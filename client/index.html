@@ -44,7 +44,7 @@
         font-size: 10px;
         letter-spacing: 0.04em;
         color: rgba(80, 140, 220, 0.5);
-        line-height: 1.7;
+        line-height: 1.3;
         white-space: pre;
       }
 
@@ -59,6 +59,16 @@
         line-height: 1.7;
         white-space: pre;
         text-align: right;
+        pointer-events: auto;
+      }
+
+      #toggles .toggle-row {
+        cursor: pointer;
+        transition: color 0.15s ease;
+      }
+
+      #toggles .toggle-row:hover {
+        color: rgba(120, 180, 255, 0.8);
       }
 
       #work-items {
@@ -69,9 +79,22 @@
         font-size: 10px;
         letter-spacing: 0.04em;
         color: rgba(0, 200, 160, 0.55);
-        line-height: 1.7;
+        line-height: 1.3;
         white-space: pre;
         display: none;
+      }
+
+      #cost-panel {
+        position: absolute;
+        top: 50%;
+        left: 18px;
+        transform: translateY(-50%);
+        font-family: 'SF Mono', 'Fira Mono', 'Cascadia Code', monospace;
+        font-size: 9px;
+        letter-spacing: 0.04em;
+        color: rgba(160, 160, 170, 0.45);
+        line-height: 1.3;
+        white-space: pre;
       }
 
       #health-bar {
@@ -101,6 +124,13 @@
         text-shadow: 0 0 6px rgba(80, 140, 255, 0.7);
         transform: translateX(-50%);
         user-select: none;
+        text-align: center;
+      }
+
+      .node-label-cost {
+        font-size: 7px;
+        color: rgba(140, 180, 220, 0.6);
+        display: none;
       }
 
       .msg-label {
@@ -172,6 +202,7 @@
     <div id="hud">
       <div id="status">⬤ connecting</div>
       <div id="work-items"></div>
+      <div id="cost-panel"></div>
       <div id="toggles"></div>
       <div id="stats"></div>
       <div id="health-bar">

@@ -10,6 +10,7 @@ import {
 import type {
 	Agent,
 	AgentCapability,
+	AgentCostEntry,
 	AgentMessage,
 	AgentState,
 	MergeQueueEntry,
@@ -125,6 +126,8 @@ export interface SceneController {
 	setLabelsVisible(visible: boolean): void;
 	setMsgLabelsVisible(visible: boolean): void;
 	setClusteringEnabled(enabled: boolean): void;
+	setCostLabelsVisible(visible: boolean): void;
+	updateAgentCosts(costs: AgentCostEntry[]): void;
 	dispose(): void;
 }
 
@@ -309,6 +312,10 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	let labelsVisible = false;
 	let msgLabelsVisible = false;
 	let clusteringEnabled = false;
+	let costLabelsVisible = true;
+
+	// Per-agent cost map: agentName -> costUsd (updated via updateAgentCosts)
+	const agentCostMap = new Map<string, number>();
 
 	// -------------------------------------------------------------------------
 	// Label helpers
@@ -316,7 +323,19 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 	function createNodeLabelObj(agent: Agent): CSS2DObject {
 		const el = document.createElement("div");
 		el.className = "node-label";
-		el.textContent = agent.name;
+
+		const nameSpan = document.createElement("span");
+		nameSpan.className = "node-label-name";
+		nameSpan.textContent = agent.name;
+		el.appendChild(nameSpan);
+
+		const costSpan = document.createElement("span");
+		costSpan.className = "node-label-cost";
+		const costUsd = agentCostMap.get(agent.name);
+		costSpan.textContent = costUsd != null ? `$${costUsd.toFixed(2)}` : "";
+		costSpan.style.display = (costLabelsVisible && costUsd != null) ? "block" : "none";
+		el.appendChild(costSpan);
+
 		const obj = new CSS2DObject(el);
 		// Position below the node sphere
 		const r = CAPABILITY_RADIUS[agent.capability] ?? 0.3;
@@ -1136,6 +1155,37 @@ export function createScene(canvas: HTMLCanvasElement): SceneController {
 				const newMoonColor = moonColor(newColor);
 				for (const moon of node.moons) {
 					moon.mesh.material.color.set(newMoonColor);
+				}
+			}
+		},
+
+		setCostLabelsVisible(visible: boolean): void {
+			costLabelsVisible = visible;
+			for (const node of nodes.values()) {
+				const costSpan = node.label.element.querySelector(".node-label-cost") as HTMLElement | null;
+				if (costSpan) {
+					const hasCost = costSpan.textContent !== "";
+					costSpan.style.display = (visible && hasCost) ? "block" : "none";
+				}
+			}
+		},
+
+		updateAgentCosts(costs: AgentCostEntry[]): void {
+			// Update the internal map
+			for (const entry of costs) {
+				agentCostMap.set(entry.agentName, entry.costUsd);
+			}
+			// Refresh label cost spans for all existing nodes
+			for (const node of nodes.values()) {
+				const costSpan = node.label.element.querySelector(".node-label-cost") as HTMLElement | null;
+				if (!costSpan) continue;
+				const costUsd = agentCostMap.get(node.agentName);
+				if (costUsd != null) {
+					costSpan.textContent = `$${costUsd.toFixed(2)}`;
+					costSpan.style.display = costLabelsVisible ? "block" : "none";
+				} else {
+					costSpan.textContent = "";
+					costSpan.style.display = "none";
 				}
 			}
 		},

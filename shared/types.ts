@@ -163,12 +163,28 @@ export interface MergeQueueEntry {
   filesModified: string[];
 }
 
+/** Per-agent cost entry for the cost leaderboard */
+export interface AgentCostEntry {
+  agentName: string;
+  capability: string;
+  modelUsed: string;
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+}
+
 /** Aggregated swarm metrics displayed in HUD */
 export interface SwarmMetrics {
   totalAgents: number;
   activeAgents: number;
   totalMessages: number;
   totalCost: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheReadTokens: number;
+  costPerMinute: number;
+  agentCosts: AgentCostEntry[];
 }
 
 /** Full state snapshot sent on initial connection */
