@@ -44,6 +44,10 @@ const DEMO_MODE = process.env["DEMO_MODE"] === "true";
 
 function openDb(path: string, label: string, required: boolean): Database | null {
   try {
+    if (!Bun.file(path).size) throw new Error(`${label} does not exist or is empty`);
+    // Open read-write briefly to allow WAL recovery, then reopen readonly
+    const rw = new Database(path);
+    rw.close();
     return new Database(path, { readonly: true });
   } catch (err) {
     if (required) {
@@ -94,10 +98,10 @@ if (DEMO_MODE) {
   queryMergeQueue = () => sim.queryMergeQueue();
   queryMetricsSessions = () => sim.queryMetricsSessions();
 } else {
-  // Core databases (required) — exit if unavailable
+  // Core databases — gracefully handle missing DBs from fresh overstory init
   const sessionsDb = openDb(`${OVERSTORY_DIR}/sessions.db`, "sessions.db", true)!;
-  const mailDb = openDb(`${OVERSTORY_DIR}/mail.db`, "mail.db", true)!;
-  const mergeQueueDb = openDb(`${OVERSTORY_DIR}/merge-queue.db`, "merge-queue.db", true)!;
+  const mailDb = openDb(`${OVERSTORY_DIR}/mail.db`, "mail.db", false);
+  const mergeQueueDb = openDb(`${OVERSTORY_DIR}/merge-queue.db`, "merge-queue.db", false);
 
   // Optional databases — continue with degraded data if unavailable
   metricsDb = openDb(`${OVERSTORY_DIR}/metrics.db`, "metrics.db", false);
@@ -107,43 +111,47 @@ if (DEMO_MODE) {
     "SELECT * FROM sessions ORDER BY depth ASC, started_at ASC"
   );
 
-  const stmtRecentMessages = mailDb.query<MessageRow, [number]>(
+  const stmtRecentMessages = mailDb?.query<MessageRow, [number]>(
     `SELECT id, from_agent, to_agent, subject, body, type, priority,
             thread_id, read, created_at
      FROM messages
      ORDER BY created_at DESC
      LIMIT ?`
-  );
+  ) ?? null;
 
-  const stmtNewMessages = mailDb.query<MessageRow, [string]>(
+  const stmtNewMessages = mailDb?.query<MessageRow, [string]>(
     `SELECT id, from_agent, to_agent, subject, body, type, priority,
             thread_id, read, created_at
      FROM messages
      WHERE created_at > ?
      ORDER BY created_at ASC`
-  );
+  ) ?? null;
 
-  const stmtMessageCount = mailDb.query<{ count: number }, []>(
+  const stmtMessageCount = mailDb?.query<{ count: number }, []>(
     "SELECT COUNT(*) as count FROM messages"
-  );
+  ) ?? null;
 
-  const stmtMergeQueue = mergeQueueDb.query<MergeQueueRow, []>(
-    "SELECT * FROM merge_queue WHERE status IN ('pending', 'merging') ORDER BY enqueued_at DESC"
-  );
+  let stmtMergeQueue: ReturnType<Database["query"]> | null = null;
+  try {
+    stmtMergeQueue = mergeQueueDb?.query<MergeQueueRow, []>(
+      "SELECT * FROM merge_queue WHERE status IN ('pending', 'merging') ORDER BY enqueued_at DESC"
+    ) ?? null;
+  } catch { /* table may not exist yet */ }
 
-  let metricsStmts: MetricsStatements | null = metricsDb
-    ? makeMetricsStatements(metricsDb)
-    : null;
+  let metricsStmts: MetricsStatements | null = null;
+  try {
+    metricsStmts = metricsDb ? makeMetricsStatements(metricsDb) : null;
+  } catch { /* tables may not exist yet */ }
 
   querySessions = () => stmtAllSessions.all().map(mapSession);
   queryRecentMessages = () =>
-    stmtRecentMessages.all(MAX_RECENT_MESSAGES).map(mapMessage).reverse();
-  queryNewMessages = (since) => stmtNewMessages.all(since).map(mapMessage);
+    stmtRecentMessages?.all(MAX_RECENT_MESSAGES).map(mapMessage).reverse() ?? [];
+  queryNewMessages = (since) => stmtNewMessages?.all(since).map(mapMessage) ?? [];
   queryMessageCount = () => {
-    const row = stmtMessageCount.get();
+    const row = stmtMessageCount?.get();
     return row?.count ?? 0;
   };
-  queryMergeQueue = () => stmtMergeQueue.all().map(mapMergeEntry);
+  queryMergeQueue = () => stmtMergeQueue?.all().map(mapMergeEntry) ?? [];
   queryMetricsSessions = () => {
     if (!metricsStmts) {
       if (metricsDb === null) {
